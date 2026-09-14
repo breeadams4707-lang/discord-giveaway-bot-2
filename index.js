@@ -12,7 +12,8 @@ const {
     EmbedBuilder,
     ActionRowBuilder,
     ButtonBuilder,
-    ButtonStyle
+    ButtonStyle,
+    StringSelectMenuBuilder
 } = require("discord.js");
 
 const fs = require("fs");
@@ -97,7 +98,10 @@ async function cacheInvites(guild) {
             );
         });
 
-        invites.set(guild.id, inviteUses);
+        invites.set(
+            guild.id,
+            inviteUses
+        );
 
         console.log(
             `Cached invites for ${guild.name}`
@@ -226,8 +230,12 @@ async function updateLeaderboard() {
 
         const embed =
             new EmbedBuilder()
-                .setTitle("🏆 Giveaway Leaderboard")
-                .setDescription(description)
+                .setTitle(
+                    "🏆 Giveaway Leaderboard"
+                )
+                .setDescription(
+                    description
+                )
                 .setTimestamp();
 
         if (data.leaderboardMessageId) {
@@ -243,7 +251,8 @@ async function updateLeaderboard() {
 
                 return;
             } catch {
-                data.leaderboardMessageId = null;
+                data.leaderboardMessageId =
+                    null;
             }
         }
 
@@ -290,6 +299,7 @@ async function finishGiveaway() {
     if (entryList.length === 0) {
         data.giveaway.active = false;
         data.giveaway.endTime = null;
+
         saveData();
 
         return;
@@ -339,7 +349,9 @@ async function finishGiveaway() {
 
     const embed =
         new EmbedBuilder()
-            .setTitle("🎉 Giveaway Ended!")
+            .setTitle(
+                "🎉 Giveaway Ended!"
+            )
             .setDescription(
                 `**Prize:** ${prize}\n\n` +
                 `🏆 **Winner:** <@${winnerId}>`
@@ -534,7 +546,10 @@ client.once(
             `Logged in as ${client.user.tag}`
         );
 
-        for (const guild of client.guilds.cache.values()) {
+        for (
+            const guild of
+            client.guilds.cache.values()
+        ) {
             await cacheInvites(guild);
         }
 
@@ -553,11 +568,29 @@ client.once(
 // ======================================================
 
 const commands = [
+
+    // ==================================================
+    // SHOP
+    // ==================================================
+
     new SlashCommandBuilder()
         .setName("shop")
         .setDescription(
             "View products in the ARK shop"
+        )
+        .addStringOption(option =>
+            option
+                .setName("category")
+                .setDescription(
+                    "Search for a shop category"
+                )
+                .setRequired(false)
+                .setAutocomplete(true)
         ),
+
+    // ==================================================
+    // ENTRIES
+    // ==================================================
 
     new SlashCommandBuilder()
         .setName("entries")
@@ -565,11 +598,19 @@ const commands = [
             "View your giveaway entries"
         ),
 
+    // ==================================================
+    // LEADERBOARD
+    // ==================================================
+
     new SlashCommandBuilder()
         .setName("leaderboard")
         .setDescription(
             "View the giveaway leaderboard"
         ),
+
+    // ==================================================
+    // START GIVEAWAY
+    // ==================================================
 
     new SlashCommandBuilder()
         .setName("startgiveaway")
@@ -597,6 +638,10 @@ const commands = [
             PermissionFlagsBits.ManageGuild
         ),
 
+    // ==================================================
+    // END GIVEAWAY
+    // ==================================================
+
     new SlashCommandBuilder()
         .setName("endgiveaway")
         .setDescription(
@@ -606,6 +651,10 @@ const commands = [
             PermissionFlagsBits.ManageGuild
         ),
 
+    // ==================================================
+    // SET LEADERBOARD
+    // ==================================================
+
     new SlashCommandBuilder()
         .setName("setleaderboard")
         .setDescription(
@@ -614,6 +663,7 @@ const commands = [
         .setDefaultMemberPermissions(
             PermissionFlagsBits.ManageGuild
         )
+
 ].map(command =>
     command.toJSON()
 );
@@ -628,11 +678,12 @@ async function registerCommands() {
             "Registering slash commands..."
         );
 
-        const rest = new REST({
-            version: "10"
-        }).setToken(
-            process.env.DISCORD_TOKEN
-        );
+        const rest =
+            new REST({
+                version: "10"
+            }).setToken(
+                process.env.DISCORD_TOKEN
+            );
 
         await rest.put(
             Routes.applicationGuildCommands(
@@ -656,13 +707,238 @@ async function registerCommands() {
 }
 
 // ======================================================
+// GET SHOP PRODUCTS
+// ======================================================
+
+async function getShopProducts() {
+    console.log(
+        "SHOP URL:",
+        `${SHOP_API_URL}/api/products`
+    );
+
+    const response =
+        await axios.get(
+            `${SHOP_API_URL}/api/products`
+        );
+
+    const products =
+        response.data.filter(
+            product =>
+                product.status ===
+                "published"
+        );
+
+    return products;
+}
+
+// ======================================================
+// GET SHOP CATEGORIES
+// ======================================================
+
+function getShopCategories(products) {
+    return [
+        ...new Set(
+            products
+                .map(product =>
+                    product.category?.trim()
+                )
+                .filter(Boolean)
+        )
+    ];
+}
+
+// ======================================================
+// CREATE PRODUCT EMBEDS
+// ======================================================
+
+function createProductEmbeds(products) {
+    return products
+        .slice(0, 10)
+        .map(product => {
+
+            const embed =
+                new EmbedBuilder()
+                    .setTitle(
+                        `🦖 ${product.name}`
+                    )
+                    .setDescription(
+                        product.details ||
+                        "No details available."
+                    )
+                    .addFields(
+                        {
+                            name:
+                                "📁 Category",
+                            value:
+                                product.category ||
+                                "Uncategorized",
+                            inline:
+                                true
+                        },
+                        {
+                            name:
+                                "💰 Price",
+                            value:
+                                product.price ||
+                                "Contact us",
+                            inline:
+                                true
+                        }
+                    );
+
+            if (product.image) {
+                embed.setImage(
+                    product.image
+                );
+            }
+
+            return embed;
+        });
+}
+
+// ======================================================
+// CREATE SHOP CATEGORY MENU
+// ======================================================
+
+function createShopCategoryMenu(categories) {
+
+    const options = [
+        {
+            label: "All Products",
+            description:
+                "View every product in the shop",
+            value: "ALL_PRODUCTS",
+            emoji: "🛒"
+        }
+    ];
+
+    // Discord allows a maximum of 25
+    // options in a select menu.
+    // One option is reserved for All Products.
+
+    for (
+        const category of
+        categories.slice(0, 24)
+    ) {
+
+        options.push({
+            label:
+                category.substring(0, 100),
+
+            description:
+                `View ${category} products`
+                    .substring(0, 100),
+
+            value:
+                category.substring(0, 100),
+
+            emoji: "📁"
+        });
+    }
+
+    const menu =
+        new StringSelectMenuBuilder()
+            .setCustomId(
+                "shop_category"
+            )
+            .setPlaceholder(
+                "🔎 Select a category..."
+            )
+            .addOptions(
+                options
+            );
+
+    return new ActionRowBuilder()
+        .addComponents(
+            menu
+        );
+}
+
+// ======================================================
 // INTERACTIONS
 // ======================================================
 
 client.on(
     "interactionCreate",
     async interaction => {
+
         try {
+
+            // ==========================================
+            // SHOP CATEGORY AUTOCOMPLETE
+            // ==========================================
+
+            if (
+                interaction.isAutocomplete() &&
+                interaction.commandName ===
+                    "shop"
+            ) {
+
+                try {
+
+                    const products =
+                        await getShopProducts();
+
+                    const categories =
+                        getShopCategories(
+                            products
+                        );
+
+                    const search =
+                        interaction.options
+                            .getString(
+                                "category"
+                            )
+                            ?.toLowerCase() ||
+                        "";
+
+                    const filtered =
+                        categories
+                            .filter(category =>
+                                category
+                                    .toLowerCase()
+                                    .includes(
+                                        search
+                                    )
+                            )
+                            .slice(0, 25);
+
+                    await interaction.respond(
+                        filtered.map(
+                            category => ({
+                                name:
+                                    category.substring(
+                                        0,
+                                        100
+                                    ),
+                                value:
+                                    category.substring(
+                                        0,
+                                        100
+                                    )
+                            })
+                        )
+                    );
+
+                    return;
+
+                } catch (error) {
+
+                    console.error(
+                        "❌ Shop autocomplete error:",
+                        error.message
+                    );
+
+                    try {
+                        await interaction.respond(
+                            []
+                        );
+                    } catch {}
+                }
+
+                return;
+            }
+
             // ==========================================
             // SHOP COMMAND
             // ==========================================
@@ -671,23 +947,16 @@ client.on(
                 interaction.commandName ===
                 "shop"
             ) {
+
                 try {
-console.log("SHOP URL:", `${SHOP_API_URL}/api/products`);
-                    const response =
-                        await axios.get(
-                            `${SHOP_API_URL}/api/products`
-                        );
 
                     const products =
-                        response.data.filter(
-                            product =>
-                                product.status ===
-                                "published"
-                        );
+                        await getShopProducts();
 
                     if (
                         products.length === 0
                     ) {
+
                         await interaction.reply({
                             content:
                                 "🛒 The shop currently has no published products.",
@@ -697,57 +966,97 @@ console.log("SHOP URL:", `${SHOP_API_URL}/api/products`);
                         return;
                     }
 
-                    const embeds =
-                        products
-                            .slice(0, 10)
-                            .map(
-                                product => {
-                                    const embed =
-                                        new EmbedBuilder()
-                                            .setTitle(
-                                                `🦖 ${product.name}`
-                                            )
-                                            .setDescription(
-                                                product.details ||
-                                                "No details available."
-                                            )
-                                            .addFields(
-                                                {
-                                                    name:
-                                                        "📁 Category",
-                                                    value:
-                                                        product.category ||
-                                                        "Uncategorized",
-                                                    inline:
-                                                        true
-                                                },
-                                                {
-                                                    name:
-                                                        "💰 Price",
-                                                    value:
-                                                        product.price ||
-                                                        "Contact us",
-                                                    inline:
-                                                        true
-                                                }
-                                            );
+                    const selectedCategory =
+                        interaction.options.getString(
+                            "category"
+                        );
 
-                                    if (
-                                        product.image
-                                    ) {
-                                        embed.setImage(
-                                            product.image
-                                        );
-                                    }
+                    // ----------------------------------
+                    // CATEGORY WAS SEARCHED
+                    // ----------------------------------
 
-                                    return embed;
-                                }
+                    if (
+                        selectedCategory
+                    ) {
+
+                        const filteredProducts =
+                            products.filter(
+                                product =>
+                                    (
+                                        product.category ||
+                                        ""
+                                    ).trim().toLowerCase() ===
+                                    selectedCategory.trim().toLowerCase()
                             );
 
+                        if (
+                            filteredProducts.length ===
+                            0
+                        ) {
+
+                            await interaction.reply({
+                                content:
+                                    `❌ No products were found in the **${selectedCategory}** category.`,
+                                ephemeral: true
+                            });
+
+                            return;
+                        }
+
+                        const embeds =
+                            createProductEmbeds(
+                                filteredProducts
+                            );
+
+                        await interaction.reply({
+                            content:
+                                `📁 **${selectedCategory}**`,
+                            embeds
+                        });
+
+                        return;
+                    }
+
+                    // ----------------------------------
+                    // NO CATEGORY
+                    // SHOW CATEGORY MENU
+                    // ----------------------------------
+
+                    const categories =
+                        getShopCategories(
+                            products
+                        );
+
+                    if (
+                        categories.length === 0
+                    ) {
+
+                        const embeds =
+                            createProductEmbeds(
+                                products
+                            );
+
+                        await interaction.reply({
+                            embeds
+                        });
+
+                        return;
+                    }
+
+                    const row =
+                        createShopCategoryMenu(
+                            categories
+                        );
+
                     await interaction.reply({
-                        embeds
+                        content:
+                            "🛒 **ARK SHOP**\n\nChoose a category below, or use `/shop category:` to search for one.",
+                        components: [row],
+                        ephemeral: true
                     });
+
                 } catch (error) {
+
                     console.error(
                         "❌ Could not load shop products:",
                         error.message
@@ -764,6 +1073,129 @@ console.log("SHOP URL:", `${SHOP_API_URL}/api/products`);
             }
 
             // ==========================================
+            // SHOP CATEGORY MENU
+            // ==========================================
+
+            if (
+                interaction.isStringSelectMenu() &&
+                interaction.customId ===
+                    "shop_category"
+            ) {
+
+                try {
+
+                    const selectedCategory =
+                        interaction.values[0];
+
+                    const products =
+                        await getShopProducts();
+
+                    // ----------------------------------
+                    // ALL PRODUCTS
+                    // ----------------------------------
+
+                    if (
+                        selectedCategory ===
+                        "ALL_PRODUCTS"
+                    ) {
+
+                        const embeds =
+                            createProductEmbeds(
+                                products
+                            );
+
+                        await interaction.update({
+                            content:
+                                "🛒 **All Products**",
+                            embeds,
+                            components: [
+                                createShopCategoryMenu(
+                                    getShopCategories(
+                                        products
+                                    )
+                                )
+                            ]
+                        });
+
+                        return;
+                    }
+
+                    // ----------------------------------
+                    // FILTER CATEGORY
+                    // ----------------------------------
+
+                    const filteredProducts =
+                        products.filter(
+                            product =>
+                                (
+                                    product.category ||
+                                    ""
+                                ).trim().toLowerCase() ===
+                                selectedCategory.trim().toLowerCase()
+                        );
+
+                    if (
+                        filteredProducts.length ===
+                        0
+                    ) {
+
+                        await interaction.update({
+                            content:
+                                `❌ No products found in **${selectedCategory}**.`,
+                            embeds: [],
+                            components: [
+                                createShopCategoryMenu(
+                                    getShopCategories(
+                                        products
+                                    )
+                                )
+                            ]
+                        });
+
+                        return;
+                    }
+
+                    const embeds =
+                        createProductEmbeds(
+                            filteredProducts
+                        );
+
+                    await interaction.update({
+                        content:
+                            `📁 **${selectedCategory}**`,
+                        embeds,
+                        components: [
+                            createShopCategoryMenu(
+                                getShopCategories(
+                                    products
+                                )
+                            )
+                        ]
+                    });
+
+                } catch (error) {
+
+                    console.error(
+                        "❌ Could not load shop category:",
+                        error.message
+                    );
+
+                    try {
+
+                        await interaction.update({
+                            content:
+                                "❌ I couldn't load that shop category.",
+                            embeds: [],
+                            components: []
+                        });
+
+                    } catch {}
+                }
+
+                return;
+            }
+
+            // ==========================================
             // ENTRIES COMMAND
             // ==========================================
 
@@ -771,6 +1203,7 @@ console.log("SHOP URL:", `${SHOP_API_URL}/api/products`);
                 interaction.commandName ===
                 "entries"
             ) {
+
                 const userId =
                     interaction.user.id;
 
@@ -796,6 +1229,7 @@ console.log("SHOP URL:", `${SHOP_API_URL}/api/products`);
                 interaction.commandName ===
                 "leaderboard"
             ) {
+
                 const entries =
                     data.giveaway.entries ||
                     {};
@@ -814,15 +1248,19 @@ console.log("SHOP URL:", `${SHOP_API_URL}/api/products`);
                     sortedEntries.length ===
                     0
                 ) {
+
                     description =
                         "No entries yet.";
+
                 } else {
+
                     for (
                         let i = 0;
                         i <
                         sortedEntries.length;
                         i++
                     ) {
+
                         const [
                             userId,
                             count
@@ -859,6 +1297,7 @@ console.log("SHOP URL:", `${SHOP_API_URL}/api/products`);
                 interaction.commandName ===
                 "startgiveaway"
             ) {
+
                 const prize =
                     interaction.options.getString(
                         "prize"
@@ -872,6 +1311,7 @@ console.log("SHOP URL:", `${SHOP_API_URL}/api/products`);
                 if (
                     data.giveaway.active
                 ) {
+
                     await interaction.reply({
                         content:
                             "❌ A giveaway is already active.",
@@ -936,12 +1376,10 @@ console.log("SHOP URL:", `${SHOP_API_URL}/api/products`);
                     ephemeral: true
                 });
 
-                await interaction.channel.send(
-                    {
-                        embeds: [embed],
-                        components: [row]
-                    }
-                );
+                await interaction.channel.send({
+                    embeds: [embed],
+                    components: [row]
+                });
 
                 await updateLeaderboard();
 
@@ -958,9 +1396,11 @@ console.log("SHOP URL:", `${SHOP_API_URL}/api/products`);
                 interaction.commandName ===
                 "endgiveaway"
             ) {
+
                 if (
                     !data.giveaway.active
                 ) {
+
                     await interaction.reply({
                         content:
                             "❌ There is no active giveaway.",
@@ -989,6 +1429,7 @@ console.log("SHOP URL:", `${SHOP_API_URL}/api/products`);
                 interaction.commandName ===
                 "setleaderboard"
             ) {
+
                 data.leaderboardChannelId =
                     interaction.channel.id;
 
@@ -1017,9 +1458,11 @@ console.log("SHOP URL:", `${SHOP_API_URL}/api/products`);
                 interaction.customId ===
                     "enter_giveaway"
             ) {
+
                 if (
                     !data.giveaway.active
                 ) {
+
                     await interaction.reply({
                         content:
                             "❌ There is no active giveaway.",
@@ -1037,6 +1480,7 @@ console.log("SHOP URL:", `${SHOP_API_URL}/api/products`);
                         userId
                     ]
                 ) {
+
                     await interaction.reply({
                         content:
                             `🎟️ You are already entered with **${data.giveaway.entries[userId]} entries**.`,
@@ -1055,6 +1499,7 @@ console.log("SHOP URL:", `${SHOP_API_URL}/api/products`);
                         userId
                     ]
                 ) {
+
                     data.giveaway.invitedMembers[
                         userId
                     ] = [];
@@ -1072,7 +1517,9 @@ console.log("SHOP URL:", `${SHOP_API_URL}/api/products`);
 
                 return;
             }
+
         } catch (error) {
+
             console.error(
                 "❌ Interaction error:",
                 error
@@ -1082,20 +1529,27 @@ console.log("SHOP URL:", `${SHOP_API_URL}/api/products`);
                 interaction.replied ||
                 interaction.deferred
             ) {
+
                 try {
+
                     await interaction.followUp({
                         content:
                             "❌ Something went wrong.",
                         ephemeral: true
                     });
+
                 } catch {}
+
             } else {
+
                 try {
+
                     await interaction.reply({
                         content:
                             "❌ Something went wrong.",
                         ephemeral: true
                     });
+
                 } catch {}
             }
         }
@@ -1107,9 +1561,11 @@ console.log("SHOP URL:", `${SHOP_API_URL}/api/products`);
 // ======================================================
 
 (async () => {
+
     await registerCommands();
 
     await client.login(
         process.env.DISCORD_TOKEN
     );
+
 })();
