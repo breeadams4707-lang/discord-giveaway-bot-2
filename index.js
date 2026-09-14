@@ -672,6 +672,7 @@ client.on(
                 "shop"
             ) {
                 try {
+console.log("SHOP URL:", `${SHOP_API_URL}/api/products`);
                     const response =
                         await axios.get(
                             `${SHOP_API_URL}/api/products`
