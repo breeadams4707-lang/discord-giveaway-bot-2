@@ -1,7 +1,5 @@
 require("dotenv").config();
 
-const axios = require("axios");
-
 const {
     Client,
     GatewayIntentBits,
@@ -13,7 +11,7 @@ const {
     ActionRowBuilder,
     ButtonBuilder,
     ButtonStyle,
-    StringSelectMenuBuilder
+    ChannelType
 } = require("discord.js");
 
 const fs = require("fs");
@@ -22,10 +20,9 @@ const fs = require("fs");
 // CONFIG
 // ======================================================
 
-const SHOP_API_URL =
-    process.env.SHOP_API_URL || "http://localhost:3000";
-
 const DATA_FILE = "./data.json";
+
+const SELLER_TAX_RATE = 0.20;
 
 // ======================================================
 // DISCORD CLIENT
@@ -50,9 +47,18 @@ let data = {
         entries: {},
         invitedMembers: {}
     },
+
     leaderboardChannelId: null,
-    leaderboardMessageId: null
+    leaderboardMessageId: null,
+
+    sellers: {},
+
+    nextSaleId: 1
 };
+
+// ======================================================
+// LOAD DATA
+// ======================================================
 
 if (fs.existsSync(DATA_FILE)) {
     try {
@@ -66,6 +72,37 @@ if (fs.existsSync(DATA_FILE)) {
         );
     }
 }
+
+// Make sure older data.json files still work
+if (!data.giveaway) {
+    data.giveaway = {
+        active: false,
+        prize: "",
+        endTime: null,
+        entries: {},
+        invitedMembers: {}
+    };
+}
+
+if (!data.giveaway.entries) {
+    data.giveaway.entries = {};
+}
+
+if (!data.giveaway.invitedMembers) {
+    data.giveaway.invitedMembers = {};
+}
+
+if (!data.sellers) {
+    data.sellers = {};
+}
+
+if (!data.nextSaleId) {
+    data.nextSaleId = 1;
+}
+
+// ======================================================
+// SAVE DATA
+// ======================================================
 
 function saveData() {
     fs.writeFileSync(
@@ -81,7 +118,7 @@ function saveData() {
 const invites = new Map();
 
 // ======================================================
-// GET INVITES
+// CACHE INVITES
 // ======================================================
 
 async function cacheInvites(guild) {
@@ -106,6 +143,7 @@ async function cacheInvites(guild) {
         console.log(
             `Cached invites for ${guild.name}`
         );
+
     } catch (error) {
         console.error(
             "❌ Could not cache invites:",
@@ -121,7 +159,8 @@ async function cacheInvites(guild) {
 async function findUsedInvite(guild) {
     try {
         const oldInvites =
-            invites.get(guild.id) || new Map();
+            invites.get(guild.id) ||
+            new Map();
 
         const newInviteCollection =
             await guild.invites.fetch();
@@ -155,6 +194,7 @@ async function findUsedInvite(guild) {
         );
 
         return usedInvite;
+
     } catch (error) {
         console.error(
             "❌ Could not find used invite:",
@@ -166,12 +206,427 @@ async function findUsedInvite(guild) {
 }
 
 // ======================================================
-// LEADERBOARD
+// SELLER SYSTEM
+// ======================================================
+
+function getSeller(userId) {
+
+    if (!data.sellers[userId]) {
+
+        data.sellers[userId] = {
+
+            channelId: null,
+
+            messageId: null,
+
+            totalSales: 0,
+
+            salesCount: 0,
+
+            totalTax: 0,
+
+            lifetimeOrders: 0,
+
+            salesHistory: []
+        };
+    }
+
+    return data.sellers[userId];
+}
+
+// ======================================================
+// MONEY FORMAT
+// ======================================================
+
+function money(value) {
+
+    return `$${Number(value || 0).toFixed(2)}`;
+}
+
+// ======================================================
+// SELLER EMBED
+// ======================================================
+
+function createSellerEmbed(user) {
+
+    const seller =
+        getSeller(user.id);
+
+    const history =
+        seller.salesHistory || [];
+
+    const recentSales =
+        history
+            .slice(-10)
+            .reverse();
+
+    let historyText =
+        "No sales recorded yet.";
+
+    if (recentSales.length > 0) {
+
+        historyText =
+            recentSales
+                .map(sale => {
+
+                    const date =
+                        new Date(
+                            sale.timestamp
+                        );
+
+                    return (
+                        `🆔 **#${sale.id}** ` +
+                        `💰 ${money(sale.amount)} ` +
+                        `🧾 Tax: ${money(sale.tax)} ` +
+                        `📅 ${date.toLocaleDateString(
+                            "en-US",
+                            {
+                                month: "short",
+                                day: "numeric"
+                            }
+                        )}`
+                    );
+
+                })
+                .join("\n");
+    }
+
+    const sellerKeeps =
+        Number(seller.totalSales || 0) -
+        Number(seller.totalTax || 0);
+
+    return new EmbedBuilder()
+
+        .setTitle("📊 Seller Panel")
+
+        .setDescription(
+            `${user}`
+        )
+
+        .addFields(
+
+            {
+                name: "💰 Total Sales",
+
+                value:
+                    money(
+                        seller.totalSales
+                    ),
+
+                inline: true
+            },
+
+            {
+                name: "📦 Sales",
+
+                value:
+                    String(
+                        seller.salesCount || 0
+                    ),
+
+                inline: true
+            },
+
+            {
+                name: "💸 Tax Owed (20%)",
+
+                value:
+                    money(
+                        seller.totalTax
+                    ),
+
+                inline: true
+            },
+
+            {
+                name: "💵 Seller Earnings",
+
+                value:
+                    money(
+                        sellerKeeps
+                    ),
+
+                inline: true
+            },
+
+            {
+                name: "📜 Sales History",
+
+                value:
+                    historyText.substring(
+                        0,
+                        1024
+                    ),
+
+                inline: false
+            },
+
+            {
+                name: "📦 Lifetime Orders",
+
+                value:
+                    String(
+                        seller.lifetimeOrders || 0
+                    ),
+
+                inline: true
+            }
+        )
+
+        .setFooter({
+            text:
+                `Last Update: ${new Date().toLocaleString(
+                    "en-US"
+                )}`
+        });
+}
+
+// ======================================================
+// UPDATE SELLER PANEL
+// ======================================================
+
+async function updateSellerPanel(
+    userId,
+    guild
+) {
+
+    const seller =
+        getSeller(userId);
+
+    if (
+        !seller.channelId ||
+        !guild
+    ) {
+        return false;
+    }
+
+    let user;
+
+    try {
+
+        user =
+            await client.users.fetch(
+                userId
+            );
+
+    } catch {
+
+        return false;
+    }
+
+    let channel;
+
+    try {
+
+        channel =
+            await guild.channels.fetch(
+                seller.channelId
+            );
+
+    } catch {
+
+        channel = null;
+    }
+
+    if (
+        !channel ||
+        !channel.isTextBased()
+    ) {
+
+        return false;
+    }
+
+    const embed =
+        createSellerEmbed(user);
+
+    // Edit existing panel
+    if (seller.messageId) {
+
+        try {
+
+            const message =
+                await channel.messages.fetch(
+                    seller.messageId
+                );
+
+            await message.edit({
+                embeds: [embed]
+            });
+
+            return true;
+
+        } catch {
+
+            seller.messageId = null;
+        }
+    }
+
+    // Create panel if it doesn't exist
+    const message =
+        await channel.send({
+            embeds: [embed]
+        });
+
+    seller.messageId =
+        message.id;
+
+    saveData();
+
+    return true;
+}
+
+// ======================================================
+// CREATE SELLER CHANNEL
+// ======================================================
+
+async function createSellerChannel(
+    guild,
+    sellerUser,
+    creatorMember
+) {
+
+    const seller =
+        getSeller(
+            sellerUser.id
+        );
+
+    // Check for existing channel
+    if (seller.channelId) {
+
+        try {
+
+            const existing =
+                await guild.channels.fetch(
+                    seller.channelId
+                );
+
+            if (existing) {
+                return existing;
+            }
+
+        } catch {
+
+            seller.channelId = null;
+            seller.messageId = null;
+        }
+    }
+
+    const safeName =
+        sellerUser.username
+            .toLowerCase()
+            .replace(
+                /[^a-z0-9-]/g,
+                "-"
+            )
+            .replace(
+                /-+/g,
+                "-"
+            )
+            .replace(
+                /^-|-$/g,
+                ""
+            )
+            .substring(
+                0,
+                80
+            ) ||
+        `seller-${sellerUser.id}`;
+
+    const channel =
+        await guild.channels.create({
+
+            name:
+                `seller-${safeName}`,
+
+            type:
+                ChannelType.GuildText,
+
+            permissionOverwrites: [
+
+                // Everyone cannot see it
+                {
+                    id:
+                        guild.roles.everyone.id,
+
+                    deny: [
+                        PermissionFlagsBits.ViewChannel
+                    ]
+                },
+
+                // Seller can see it
+                {
+                    id:
+                        sellerUser.id,
+
+                    allow: [
+                        PermissionFlagsBits.ViewChannel,
+                        PermissionFlagsBits.SendMessages,
+                        PermissionFlagsBits.ReadMessageHistory
+                    ]
+                },
+
+                // Bot can see it
+                {
+                    id:
+                        client.user.id,
+
+                    allow: [
+                        PermissionFlagsBits.ViewChannel,
+                        PermissionFlagsBits.SendMessages,
+                        PermissionFlagsBits.ReadMessageHistory
+                    ]
+                }
+            ]
+        });
+
+    // Admin who created the channel can see it
+    if (
+        creatorMember &&
+        creatorMember.id !== sellerUser.id &&
+        creatorMember.id !== client.user.id
+    ) {
+
+        try {
+
+            await channel.permissionOverwrites.edit(
+                creatorMember.id,
+                {
+                    ViewChannel: true,
+                    SendMessages: true,
+                    ReadMessageHistory: true
+                }
+            );
+
+        } catch {}
+    }
+
+    seller.channelId =
+        channel.id;
+
+    seller.messageId =
+        null;
+
+    saveData();
+
+    await updateSellerPanel(
+        sellerUser.id,
+        guild
+    );
+
+    return channel;
+}
+
+// ======================================================
+// GIVEAWAY LEADERBOARD
 // ======================================================
 
 async function updateLeaderboard() {
+
     try {
-        if (!data.leaderboardChannelId) {
+
+        if (
+            !data.leaderboardChannelId
+        ) {
             return;
         }
 
@@ -189,28 +644,40 @@ async function updateLeaderboard() {
 
         const sortedEntries =
             Object.entries(entries)
-                .sort((a, b) => b[1] - a[1])
+                .sort(
+                    (a, b) =>
+                        b[1] - a[1]
+                )
                 .slice(0, 10);
 
         let description = "";
 
-        if (sortedEntries.length === 0) {
+        if (
+            sortedEntries.length === 0
+        ) {
+
             description =
                 "No giveaway entries yet.";
+
         } else {
+
             for (
                 let i = 0;
                 i < sortedEntries.length;
                 i++
             ) {
+
                 const [
                     userId,
                     entryCount
-                ] = sortedEntries[i];
+                ] =
+                    sortedEntries[i];
 
-                let username = "Unknown User";
+                let username =
+                    "Unknown User";
 
                 try {
+
                     const member =
                         await channel.guild.members.fetch(
                             userId
@@ -218,7 +685,9 @@ async function updateLeaderboard() {
 
                     username =
                         member.user.username;
+
                 } catch {
+
                     username =
                         `<@${userId}>`;
                 }
@@ -230,16 +699,23 @@ async function updateLeaderboard() {
 
         const embed =
             new EmbedBuilder()
+
                 .setTitle(
                     "🏆 Giveaway Leaderboard"
                 )
+
                 .setDescription(
                     description
                 )
+
                 .setTimestamp();
 
-        if (data.leaderboardMessageId) {
+        if (
+            data.leaderboardMessageId
+        ) {
+
             try {
+
                 const message =
                     await channel.messages.fetch(
                         data.leaderboardMessageId
@@ -250,7 +726,9 @@ async function updateLeaderboard() {
                 });
 
                 return;
+
             } catch {
+
                 data.leaderboardMessageId =
                     null;
             }
@@ -265,7 +743,9 @@ async function updateLeaderboard() {
             message.id;
 
         saveData();
+
     } catch (error) {
+
         console.error(
             "❌ Could not update leaderboard:",
             error.message
@@ -274,11 +754,14 @@ async function updateLeaderboard() {
 }
 
 // ======================================================
-// GIVEAWAY FINISH
+// FINISH GIVEAWAY
 // ======================================================
 
 async function finishGiveaway() {
-    if (!data.giveaway.active) {
+
+    if (
+        !data.giveaway.active
+    ) {
         return;
     }
 
@@ -287,18 +770,35 @@ async function finishGiveaway() {
 
     const entryList = [];
 
-    for (const [
-        userId,
-        count
-    ] of Object.entries(entries)) {
-        for (let i = 0; i < count; i++) {
-            entryList.push(userId);
+    for (
+        const [
+            userId,
+            count
+        ]
+        of Object.entries(entries)
+    ) {
+
+        for (
+            let i = 0;
+            i < count;
+            i++
+        ) {
+
+            entryList.push(
+                userId
+            );
         }
     }
 
-    if (entryList.length === 0) {
-        data.giveaway.active = false;
-        data.giveaway.endTime = null;
+    if (
+        entryList.length === 0
+    ) {
+
+        data.giveaway.active =
+            false;
+
+        data.giveaway.endTime =
+            null;
 
         saveData();
 
@@ -316,8 +816,11 @@ async function finishGiveaway() {
     const prize =
         data.giveaway.prize;
 
-    data.giveaway.active = false;
-    data.giveaway.endTime = null;
+    data.giveaway.active =
+        false;
+
+    data.giveaway.endTime =
+        null;
 
     saveData();
 
@@ -340,6 +843,7 @@ async function finishGiveaway() {
         );
 
     if (!channel) {
+
         console.error(
             "❌ Could not find a channel to announce giveaway winner."
         );
@@ -349,13 +853,16 @@ async function finishGiveaway() {
 
     const embed =
         new EmbedBuilder()
+
             .setTitle(
                 "🎉 Giveaway Ended!"
             )
+
             .setDescription(
                 `**Prize:** ${prize}\n\n` +
                 `🏆 **Winner:** <@${winnerId}>`
             )
+
             .setTimestamp();
 
     await channel.send({
@@ -370,6 +877,7 @@ async function finishGiveaway() {
 // ======================================================
 
 function startGiveawayTimer() {
+
     if (
         !data.giveaway.active ||
         !data.giveaway.endTime
@@ -382,13 +890,18 @@ function startGiveawayTimer() {
         Date.now();
 
     if (remaining <= 0) {
+
         finishGiveaway();
+
         return;
     }
 
-    setTimeout(() => {
-        finishGiveaway();
-    }, remaining);
+    setTimeout(
+        () => {
+            finishGiveaway();
+        },
+        remaining
+    );
 }
 
 // ======================================================
@@ -398,7 +911,9 @@ function startGiveawayTimer() {
 client.on(
     "guildMemberAdd",
     async member => {
+
         try {
+
             const usedInvite =
                 await findUsedInvite(
                     member.guild
@@ -431,6 +946,7 @@ client.on(
                     inviterId
                 ]
             ) {
+
                 data.giveaway.entries[
                     inviterId
                 ] = 1;
@@ -445,6 +961,7 @@ client.on(
                     inviterId
                 ]
             ) {
+
                 data.giveaway.invitedMembers[
                     inviterId
                 ] = [];
@@ -452,7 +969,9 @@ client.on(
 
             data.giveaway.invitedMembers[
                 inviterId
-            ].push(member.id);
+            ].push(
+                member.id
+            );
 
             saveData();
 
@@ -461,7 +980,9 @@ client.on(
             console.log(
                 `${usedInvite.inviter.username} invited ${member.user.username}`
             );
+
         } catch (error) {
+
             console.error(
                 "❌ Error handling member join:",
                 error.message
@@ -477,7 +998,9 @@ client.on(
 client.on(
     "guildMemberRemove",
     async member => {
+
         try {
+
             if (
                 !data.giveaway.active
             ) {
@@ -488,18 +1011,25 @@ client.on(
                 data.giveaway
                     .invitedMembers || {};
 
-            for (const [
-                inviterId,
-                memberIds
-            ] of Object.entries(
-                invitedMembers
-            )) {
+            for (
+                const [
+                    inviterId,
+                    memberIds
+                ]
+                of Object.entries(
+                    invitedMembers
+                )
+            ) {
+
                 const index =
                     memberIds.indexOf(
                         member.id
                     );
 
-                if (index !== -1) {
+                if (
+                    index !== -1
+                ) {
+
                     memberIds.splice(
                         index,
                         1
@@ -510,6 +1040,7 @@ client.on(
                             inviterId
                         ] > 1
                     ) {
+
                         data.giveaway.entries[
                             inviterId
                         ]--;
@@ -526,7 +1057,9 @@ client.on(
                     break;
                 }
             }
+
         } catch (error) {
+
             console.error(
                 "❌ Error handling member leave:",
                 error.message
@@ -542,6 +1075,7 @@ client.on(
 client.once(
     "ready",
     async () => {
+
         console.log(
             `Logged in as ${client.user.tag}`
         );
@@ -550,7 +1084,10 @@ client.once(
             const guild of
             client.guilds.cache.values()
         ) {
-            await cacheInvites(guild);
+
+            await cacheInvites(
+                guild
+            );
         }
 
         console.log(
@@ -560,6 +1097,30 @@ client.once(
         startGiveawayTimer();
 
         await updateLeaderboard();
+
+        // Restore seller panels
+        for (
+            const userId of
+            Object.keys(
+                data.sellers || {}
+            )
+        ) {
+
+            try {
+
+                await updateSellerPanel(
+                    userId,
+                    client.guilds.cache.first()
+                );
+
+            } catch (error) {
+
+                console.error(
+                    `❌ Could not restore seller panel for ${userId}:`,
+                    error.message
+                );
+            }
+        }
     }
 );
 
@@ -568,25 +1129,6 @@ client.once(
 // ======================================================
 
 const commands = [
-
-    // ==================================================
-    // SHOP
-    // ==================================================
-
-    new SlashCommandBuilder()
-        .setName("shop")
-        .setDescription(
-            "View products in the ARK shop"
-        )
-        .addStringOption(option =>
-            option
-                .setName("category")
-                .setDescription(
-                    "Search for a shop category"
-                )
-                .setRequired(false)
-                .setAutocomplete(true)
-        ),
 
     // ==================================================
     // ENTRIES
@@ -617,6 +1159,7 @@ const commands = [
         .setDescription(
             "Start a giveaway"
         )
+
         .addStringOption(option =>
             option
                 .setName("prize")
@@ -625,6 +1168,7 @@ const commands = [
                 )
                 .setRequired(true)
         )
+
         .addIntegerOption(option =>
             option
                 .setName("hours")
@@ -633,7 +1177,9 @@ const commands = [
                 )
                 .setRequired(true)
                 .setMinValue(1)
+                .setMaxValue(720)
         )
+
         .setDefaultMemberPermissions(
             PermissionFlagsBits.ManageGuild
         ),
@@ -647,6 +1193,7 @@ const commands = [
         .setDescription(
             "End the current giveaway"
         )
+
         .setDefaultMemberPermissions(
             PermissionFlagsBits.ManageGuild
         ),
@@ -660,8 +1207,62 @@ const commands = [
         .setDescription(
             "Set this channel as the giveaway leaderboard channel"
         )
+
         .setDefaultMemberPermissions(
             PermissionFlagsBits.ManageGuild
+        ),
+
+    // ==================================================
+    // CREATE SELLER
+    // ==================================================
+
+    new SlashCommandBuilder()
+        .setName("createseller")
+        .setDescription(
+            "Create a private seller channel and seller panel"
+        )
+
+        .addUserOption(option =>
+            option
+                .setName("seller")
+                .setDescription(
+                    "The seller to create a panel for"
+                )
+                .setRequired(true)
+        )
+
+        .setDefaultMemberPermissions(
+            PermissionFlagsBits.ManageChannels
+        ),
+
+    // ==================================================
+    // EARN
+    // ==================================================
+
+    new SlashCommandBuilder()
+        .setName("earn")
+        .setDescription(
+            "Record money earned from a sale"
+        )
+
+        .addNumberOption(option =>
+            option
+                .setName("amount")
+                .setDescription(
+                    "The amount earned from the sale"
+                )
+                .setRequired(true)
+                .setMinValue(0.01)
+        ),
+
+    // ==================================================
+    // SELLER
+    // ==================================================
+
+    new SlashCommandBuilder()
+        .setName("seller")
+        .setDescription(
+            "View your seller totals"
         )
 
 ].map(command =>
@@ -673,7 +1274,9 @@ const commands = [
 // ======================================================
 
 async function registerCommands() {
+
     try {
+
         console.log(
             "Registering slash commands..."
         );
@@ -686,10 +1289,12 @@ async function registerCommands() {
             );
 
         await rest.put(
+
             Routes.applicationGuildCommands(
                 process.env.CLIENT_ID,
                 process.env.GUILD_ID
             ),
+
             {
                 body: commands
             }
@@ -698,160 +1303,14 @@ async function registerCommands() {
         console.log(
             "Slash commands registered!"
         );
+
     } catch (error) {
+
         console.error(
             "❌ Could not register slash commands:",
             error
         );
     }
-}
-
-// ======================================================
-// GET SHOP PRODUCTS
-// ======================================================
-
-async function getShopProducts() {
-    console.log(
-        "SHOP URL:",
-        `${SHOP_API_URL}/api/products`
-    );
-
-    const response =
-        await axios.get(
-            `${SHOP_API_URL}/api/products`
-        );
-
-    const products =
-        response.data.filter(
-            product =>
-                product.status ===
-                "published"
-        );
-
-    return products;
-}
-
-// ======================================================
-// GET SHOP CATEGORIES
-// ======================================================
-
-function getShopCategories(products) {
-    return [
-        ...new Set(
-            products
-                .map(product =>
-                    product.category?.trim()
-                )
-                .filter(Boolean)
-        )
-    ];
-}
-
-// ======================================================
-// CREATE PRODUCT EMBEDS
-// ======================================================
-
-function createProductEmbeds(products) {
-    return products
-        .slice(0, 10)
-        .map(product => {
-
-            const embed =
-                new EmbedBuilder()
-                    .setTitle(
-                        `🦖 ${product.name}`
-                    )
-                    .setDescription(
-                        product.details ||
-                        "No details available."
-                    )
-                    .addFields(
-                        {
-                            name:
-                                "📁 Category",
-                            value:
-                                product.category ||
-                                "Uncategorized",
-                            inline:
-                                true
-                        },
-                        {
-                            name:
-                                "💰 Price",
-                            value:
-                                product.price ||
-                                "Contact us",
-                            inline:
-                                true
-                        }
-                    );
-
-            if (product.image) {
-                embed.setImage(
-                    product.image
-                );
-            }
-
-            return embed;
-        });
-}
-
-// ======================================================
-// CREATE SHOP CATEGORY MENU
-// ======================================================
-
-function createShopCategoryMenu(categories) {
-
-    const options = [
-        {
-            label: "All Products",
-            description:
-                "View every product in the shop",
-            value: "ALL_PRODUCTS",
-            emoji: "🛒"
-        }
-    ];
-
-    // Discord allows a maximum of 25
-    // options in a select menu.
-    // One option is reserved for All Products.
-
-    for (
-        const category of
-        categories.slice(0, 24)
-    ) {
-
-        options.push({
-            label:
-                category.substring(0, 100),
-
-            description:
-                `View ${category} products`
-                    .substring(0, 100),
-
-            value:
-                category.substring(0, 100),
-
-            emoji: "📁"
-        });
-    }
-
-    const menu =
-        new StringSelectMenuBuilder()
-            .setCustomId(
-                "shop_category"
-            )
-            .setPlaceholder(
-                "🔎 Select a category..."
-            )
-            .addOptions(
-                options
-            );
-
-    return new ActionRowBuilder()
-        .addComponents(
-            menu
-        );
 }
 
 // ======================================================
@@ -865,338 +1324,258 @@ client.on(
         try {
 
             // ==========================================
-            // SHOP CATEGORY AUTOCOMPLETE
+            // CREATE SELLER
             // ==========================================
 
             if (
-                interaction.isAutocomplete() &&
                 interaction.commandName ===
-                    "shop"
+                "createseller"
             ) {
+
+                const sellerUser =
+                    interaction.options.getUser(
+                        "seller"
+                    );
 
                 try {
 
-                    const products =
-                        await getShopProducts();
-
-                    const categories =
-                        getShopCategories(
-                            products
+                    const channel =
+                        await createSellerChannel(
+                            interaction.guild,
+                            sellerUser,
+                            interaction.member
                         );
 
-                    const search =
-                        interaction.options
-                            .getString(
-                                "category"
-                            )
-                            ?.toLowerCase() ||
-                        "";
+                    await interaction.reply({
 
-                    const filtered =
-                        categories
-                            .filter(category =>
-                                category
-                                    .toLowerCase()
-                                    .includes(
-                                        search
-                                    )
-                            )
-                            .slice(0, 25);
+                        content:
+                            `✅ Seller channel created for ${sellerUser}.\n` +
+                            `📁 ${channel}`,
 
-                    await interaction.respond(
-                        filtered.map(
-                            category => ({
-                                name:
-                                    category.substring(
-                                        0,
-                                        100
-                                    ),
-                                value:
-                                    category.substring(
-                                        0,
-                                        100
-                                    )
-                            })
-                        )
+                        ephemeral:
+                            true
+                    });
+
+                } catch (error) {
+
+                    console.error(
+                        "❌ Could not create seller channel:",
+                        error
                     );
+
+                    await interaction.reply({
+
+                        content:
+                            "❌ I couldn't create the seller channel. Make sure the bot has **Manage Channels** permission.",
+
+                        ephemeral:
+                            true
+                    });
+                }
+
+                return;
+            }
+
+            // ==========================================
+            // EARN
+            // ==========================================
+
+            if (
+                interaction.commandName ===
+                "earn"
+            ) {
+
+                const userId =
+                    interaction.user.id;
+
+                const amount =
+                    interaction.options.getNumber(
+                        "amount"
+                    );
+
+                const seller =
+                    getSeller(
+                        userId
+                    );
+
+                // Seller must have a channel
+                if (
+                    !seller.channelId
+                ) {
+
+                    await interaction.reply({
+
+                        content:
+                            "❌ You do not have a seller channel yet. Ask an admin to run `/createseller seller:@you` first.",
+
+                        ephemeral:
+                            true
+                    });
 
                     return;
+                }
 
-                } catch (error) {
-
-                    console.error(
-                        "❌ Shop autocomplete error:",
-                        error.message
+                // Calculate 20%
+                const tax =
+                    Number(
+                        (
+                            amount *
+                            SELLER_TAX_RATE
+                        ).toFixed(2)
                     );
 
-                    try {
-                        await interaction.respond(
-                            []
-                        );
-                    } catch {}
+                // Add sale to total
+                seller.totalSales =
+                    Number(
+                        (
+                            seller.totalSales +
+                            amount
+                        ).toFixed(2)
+                    );
+
+                // Add tax
+                seller.totalTax =
+                    Number(
+                        (
+                            seller.totalTax +
+                            tax
+                        ).toFixed(2)
+                    );
+
+                // Add sale count
+                seller.salesCount =
+                    Number(
+                        seller.salesCount ||
+                        0
+                    ) + 1;
+
+                // Add order
+                seller.lifetimeOrders =
+                    Number(
+                        seller.lifetimeOrders ||
+                        0
+                    ) + 1;
+
+                // Create sale history record
+                const sale = {
+
+                    id:
+                        data.nextSaleId++,
+
+                    amount:
+                        Number(
+                            amount.toFixed(2)
+                        ),
+
+                    tax:
+                        tax,
+
+                    timestamp:
+                        Date.now()
+                };
+
+                if (
+                    !seller.salesHistory
+                ) {
+
+                    seller.salesHistory =
+                        [];
                 }
+
+                seller.salesHistory.push(
+                    sale
+                );
+
+                // Keep the most recent 100 sales
+                if (
+                    seller.salesHistory.length >
+                    100
+                ) {
+
+                    seller.salesHistory =
+                        seller.salesHistory.slice(
+                            -100
+                        );
+                }
+
+                saveData();
+
+                // Update seller's channel
+                await updateSellerPanel(
+                    userId,
+                    interaction.guild
+                );
+
+                // Private response
+                await interaction.reply({
+
+                    content:
+                        `💰 **Sale Recorded!**\n\n` +
+                        `💵 Earned: **${money(amount)}**\n` +
+                        `🧾 20% Tax Owed: **${money(tax)}**\n` +
+                        `💵 You Keep: **${money(amount - tax)}**`,
+
+                    ephemeral:
+                        true
+                });
 
                 return;
             }
 
             // ==========================================
-            // SHOP COMMAND
+            // SELLER
             // ==========================================
 
             if (
                 interaction.commandName ===
-                "shop"
+                "seller"
             ) {
 
-                try {
-
-                    const products =
-                        await getShopProducts();
-
-                    if (
-                        products.length === 0
-                    ) {
-
-                        await interaction.reply({
-                            content:
-                                "🛒 The shop currently has no published products.",
-                            ephemeral: true
-                        });
-
-                        return;
-                    }
-
-                    const selectedCategory =
-                        interaction.options.getString(
-                            "category"
-                        );
-
-                    // ----------------------------------
-                    // CATEGORY WAS SEARCHED
-                    // ----------------------------------
-
-                    if (
-                        selectedCategory
-                    ) {
-
-                        const filteredProducts =
-                            products.filter(
-                                product =>
-                                    (
-                                        product.category ||
-                                        ""
-                                    ).trim().toLowerCase() ===
-                                    selectedCategory.trim().toLowerCase()
-                            );
-
-                        if (
-                            filteredProducts.length ===
-                            0
-                        ) {
-
-                            await interaction.reply({
-                                content:
-                                    `❌ No products were found in the **${selectedCategory}** category.`,
-                                ephemeral: true
-                            });
-
-                            return;
-                        }
-
-                        const embeds =
-                            createProductEmbeds(
-                                filteredProducts
-                            );
-
-                        await interaction.reply({
-                            content:
-                                `📁 **${selectedCategory}**`,
-                            embeds
-                        });
-
-                        return;
-                    }
-
-                    // ----------------------------------
-                    // NO CATEGORY
-                    // SHOW CATEGORY MENU
-                    // ----------------------------------
-
-                    const categories =
-                        getShopCategories(
-                            products
-                        );
-
-                    if (
-                        categories.length === 0
-                    ) {
-
-                        const embeds =
-                            createProductEmbeds(
-                                products
-                            );
-
-                        await interaction.reply({
-                            embeds
-                        });
-
-                        return;
-                    }
-
-                    const row =
-                        createShopCategoryMenu(
-                            categories
-                        );
-
-                    await interaction.reply({
-                        content:
-                            "🛒 **ARK SHOP**\n\nChoose a category below, or use `/shop category:` to search for one.",
-                        components: [row],
-                        ephemeral: true
-                    });
-
-                } catch (error) {
-
-                    console.error(
-                        "❌ Could not load shop products:",
-                        error.message
+                const seller =
+                    getSeller(
+                        interaction.user.id
                     );
 
-                    await interaction.reply({
-                        content:
-                            "❌ I couldn't connect to the ARK shop right now.",
-                        ephemeral: true
-                    });
-                }
-
-                return;
-            }
-
-            // ==========================================
-            // SHOP CATEGORY MENU
-            // ==========================================
-
-            if (
-                interaction.isStringSelectMenu() &&
-                interaction.customId ===
-                    "shop_category"
-            ) {
-
-                try {
-
-                    const selectedCategory =
-                        interaction.values[0];
-
-                    const products =
-                        await getShopProducts();
-
-                    // ----------------------------------
-                    // ALL PRODUCTS
-                    // ----------------------------------
-
-                    if (
-                        selectedCategory ===
-                        "ALL_PRODUCTS"
-                    ) {
-
-                        const embeds =
-                            createProductEmbeds(
-                                products
-                            );
-
-                        await interaction.update({
-                            content:
-                                "🛒 **All Products**",
-                            embeds,
-                            components: [
-                                createShopCategoryMenu(
-                                    getShopCategories(
-                                        products
-                                    )
-                                )
-                            ]
-                        });
-
-                        return;
-                    }
-
-                    // ----------------------------------
-                    // FILTER CATEGORY
-                    // ----------------------------------
-
-                    const filteredProducts =
-                        products.filter(
-                            product =>
-                                (
-                                    product.category ||
-                                    ""
-                                ).trim().toLowerCase() ===
-                                selectedCategory.trim().toLowerCase()
-                        );
-
-                    if (
-                        filteredProducts.length ===
+                const sellerKeeps =
+                    Number(
+                        seller.totalSales ||
                         0
-                    ) {
-
-                        await interaction.update({
-                            content:
-                                `❌ No products found in **${selectedCategory}**.`,
-                            embeds: [],
-                            components: [
-                                createShopCategoryMenu(
-                                    getShopCategories(
-                                        products
-                                    )
-                                )
-                            ]
-                        });
-
-                        return;
-                    }
-
-                    const embeds =
-                        createProductEmbeds(
-                            filteredProducts
-                        );
-
-                    await interaction.update({
-                        content:
-                            `📁 **${selectedCategory}**`,
-                        embeds,
-                        components: [
-                            createShopCategoryMenu(
-                                getShopCategories(
-                                    products
-                                )
-                            )
-                        ]
-                    });
-
-                } catch (error) {
-
-                    console.error(
-                        "❌ Could not load shop category:",
-                        error.message
+                    ) -
+                    Number(
+                        seller.totalTax ||
+                        0
                     );
 
-                    try {
+                const embed =
+                    createSellerEmbed(
+                        interaction.user
+                    );
 
-                        await interaction.update({
-                            content:
-                                "❌ I couldn't load that shop category.",
-                            embeds: [],
-                            components: []
-                        });
+                embed.addFields({
 
-                    } catch {}
-                }
+                    name:
+                        "📌 Your Totals",
+
+                    value:
+                        `💰 Sales: ${money(seller.totalSales)}\n` +
+                        `🧾 Tax Owed: ${money(seller.totalTax)}\n` +
+                        `💵 Seller Earnings: ${money(sellerKeeps)}`
+                });
+
+                await interaction.reply({
+
+                    embeds:
+                        [embed],
+
+                    ephemeral:
+                        true
+                });
 
                 return;
             }
 
             // ==========================================
-            // ENTRIES COMMAND
+            // ENTRIES
             // ==========================================
 
             if (
@@ -1213,16 +1592,19 @@ client.on(
                     ] || 0;
 
                 await interaction.reply({
+
                     content:
                         `🎟️ You currently have **${entries} giveaway entries**.`,
-                    ephemeral: true
+
+                    ephemeral:
+                        true
                 });
 
                 return;
             }
 
             // ==========================================
-            // LEADERBOARD COMMAND
+            // LEADERBOARD
             // ==========================================
 
             if (
@@ -1235,14 +1617,20 @@ client.on(
                     {};
 
                 const sortedEntries =
-                    Object.entries(entries)
+                    Object.entries(
+                        entries
+                    )
                         .sort(
                             (a, b) =>
                                 b[1] - a[1]
                         )
-                        .slice(0, 10);
+                        .slice(
+                            0,
+                            10
+                        );
 
-                let description = "";
+                let description =
+                    "";
 
                 if (
                     sortedEntries.length ===
@@ -1274,16 +1662,22 @@ client.on(
 
                 const embed =
                     new EmbedBuilder()
+
                         .setTitle(
                             "🏆 Giveaway Leaderboard"
                         )
+
                         .setDescription(
                             description
                         );
 
                 await interaction.reply({
-                    embeds: [embed],
-                    ephemeral: true
+
+                    embeds:
+                        [embed],
+
+                    ephemeral:
+                        true
                 });
 
                 return;
@@ -1313,53 +1707,80 @@ client.on(
                 ) {
 
                     await interaction.reply({
+
                         content:
                             "❌ A giveaway is already active.",
-                        ephemeral: true
+
+                        ephemeral:
+                            true
                     });
 
                     return;
                 }
 
                 data.giveaway = {
-                    active: true,
-                    prize,
+
+                    active:
+                        true,
+
+                    prize:
+                        prize,
+
                     endTime:
                         Date.now() +
                         hours *
-                            60 *
-                            60 *
-                            1000,
-                    entries: {},
-                    invitedMembers: {}
+                        60 *
+                        60 *
+                        1000,
+
+                    entries:
+                        {},
+
+                    invitedMembers:
+                        {}
                 };
 
                 saveData();
 
                 const embed =
                     new EmbedBuilder()
+
                         .setTitle(
                             "🎉 GIVEAWAY!"
                         )
+
                         .setDescription(
+
                             `🎁 **Prize:** ${prize}\n\n` +
+
                             `⏰ **Duration:** ${hours} hour(s)\n\n` +
+
                             `🎟️ Everyone starts with 1 entry.\n` +
+
                             `👥 Each successful invite gives you +1 entry.\n` +
+
                             `🔄 Entries are removed if the invited member leaves.\n\n` +
+
                             `🏆 The winner is selected randomly, weighted by entries.`
                         )
+
                         .setTimestamp();
 
                 const button =
                     new ButtonBuilder()
+
                         .setCustomId(
                             "enter_giveaway"
                         )
+
                         .setLabel(
                             "Enter Giveaway"
                         )
-                        .setEmoji("🎟️")
+
+                        .setEmoji(
+                            "🎟️"
+                        )
+
                         .setStyle(
                             ButtonStyle.Success
                         );
@@ -1371,14 +1792,21 @@ client.on(
                         );
 
                 await interaction.reply({
+
                     content:
                         "🎉 Giveaway started!",
-                    ephemeral: true
+
+                    ephemeral:
+                        true
                 });
 
                 await interaction.channel.send({
-                    embeds: [embed],
-                    components: [row]
+
+                    embeds:
+                        [embed],
+
+                    components:
+                        [row]
                 });
 
                 await updateLeaderboard();
@@ -1402,18 +1830,24 @@ client.on(
                 ) {
 
                     await interaction.reply({
+
                         content:
                             "❌ There is no active giveaway.",
-                        ephemeral: true
+
+                        ephemeral:
+                            true
                     });
 
                     return;
                 }
 
                 await interaction.reply({
+
                     content:
                         "⏹️ Ending giveaway...",
-                    ephemeral: true
+
+                    ephemeral:
+                        true
                 });
 
                 await finishGiveaway();
@@ -1441,9 +1875,12 @@ client.on(
                 await updateLeaderboard();
 
                 await interaction.reply({
+
                     content:
                         "✅ This channel is now the giveaway leaderboard channel.",
-                    ephemeral: true
+
+                    ephemeral:
+                        true
                 });
 
                 return;
@@ -1464,9 +1901,12 @@ client.on(
                 ) {
 
                     await interaction.reply({
+
                         content:
                             "❌ There is no active giveaway.",
-                        ephemeral: true
+
+                        ephemeral:
+                            true
                     });
 
                     return;
@@ -1482,9 +1922,12 @@ client.on(
                 ) {
 
                     await interaction.reply({
+
                         content:
                             `🎟️ You are already entered with **${data.giveaway.entries[userId]} entries**.`,
-                        ephemeral: true
+
+                        ephemeral:
+                            true
                     });
 
                     return;
@@ -1508,9 +1951,12 @@ client.on(
                 saveData();
 
                 await interaction.reply({
+
                     content:
                         "🎟️ You are now entered into the giveaway with **1 entry**!",
-                    ephemeral: true
+
+                    ephemeral:
+                        true
                 });
 
                 await updateLeaderboard();
@@ -1533,9 +1979,12 @@ client.on(
                 try {
 
                     await interaction.followUp({
+
                         content:
                             "❌ Something went wrong.",
-                        ephemeral: true
+
+                        ephemeral:
+                            true
                     });
 
                 } catch {}
@@ -1545,9 +1994,12 @@ client.on(
                 try {
 
                     await interaction.reply({
+
                         content:
                             "❌ Something went wrong.",
-                        ephemeral: true
+
+                        ephemeral:
+                            true
                     });
 
                 } catch {}
