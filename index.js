@@ -1082,7 +1082,7 @@ client.on(
                 await interaction.reply({
                     content:
                         `🎟️ You currently have **${entries} giveaway entries**.`,
-                    ephemeral: true
+                    flags: 64
                 });
 
                 return;
@@ -1151,7 +1151,7 @@ client.on(
 
                 await interaction.reply({
                     embeds: [embed],
-                    ephemeral: true
+                    flags: 64
                 });
 
                 return;
@@ -1184,7 +1184,7 @@ client.on(
                     await interaction.reply({
                         content:
                             "❌ A giveaway is already active.",
-                        ephemeral: true
+                        flags: 64
                     });
 
                     return;
@@ -1242,7 +1242,7 @@ client.on(
                 await interaction.reply({
                     content:
                         "🎉 Giveaway started!",
-                    ephemeral: true
+                    flags: 64
                 });
 
                 await interaction.channel.send({
@@ -1274,7 +1274,7 @@ client.on(
                     await interaction.reply({
                         content:
                             "❌ There is no active giveaway.",
-                        ephemeral: true
+                        flags: 64
                     });
 
                     return;
@@ -1283,7 +1283,7 @@ client.on(
                 await interaction.reply({
                     content:
                         "⏹️ Ending giveaway...",
-                    ephemeral: true
+                    flags: 64
                 });
 
                 await finishGiveaway();
@@ -1314,7 +1314,7 @@ client.on(
                 await interaction.reply({
                     content:
                         "✅ This channel is now the giveaway leaderboard channel.",
-                    ephemeral: true
+                    flags: 64
                 });
 
                 return;
@@ -1344,11 +1344,18 @@ client.on(
                     await interaction.reply({
                         content:
                             "❌ This user is already registered as a seller.",
-                        ephemeral: true
+                        flags: 64
                     });
 
                     return;
                 }
+
+                // Acknowledge the interaction immediately because creating
+                // the seller channel/panel can take longer than Discord's
+                // initial interaction response window.
+                await interaction.deferReply({
+                    flags: 64
+                });
 
                 const result =
                     await createSeller(
@@ -1358,19 +1365,17 @@ client.on(
 
                 if (!result.success) {
 
-                    await interaction.reply({
+                    await interaction.editReply({
                         content:
-                            result.message,
-                        ephemeral: true
+                            result.message
                     });
 
                     return;
                 }
 
-                await interaction.reply({
+                await interaction.editReply({
                     content:
-                        `✅ Seller created for ${sellerUser}.\n\n📁 Seller channel: ${result.channel}`,
-                    ephemeral: true
+                        `✅ Seller created for ${sellerUser}.\n\n📁 Seller channel: ${result.channel}`
                 });
 
                 return;
@@ -1396,7 +1401,7 @@ client.on(
                     await interaction.reply({
                         content:
                             "❌ You are not registered as a seller.",
-                        ephemeral: true
+                        flags: 64
                     });
 
                     return;
@@ -1520,7 +1525,7 @@ client.on(
 
                 await interaction.reply({
                     embeds: [embed],
-                    ephemeral: true
+                    flags: 64
                 });
 
                 return;
@@ -1547,7 +1552,7 @@ client.on(
                     await interaction.reply({
                         content:
                             "❌ You are not registered as a seller.",
-                        ephemeral: true
+                        flags: 64
                     });
 
                     return;
@@ -1561,7 +1566,7 @@ client.on(
 
                 await interaction.reply({
                     embeds: [embed],
-                    ephemeral: true
+                    flags: 64
                 });
 
                 return;
@@ -1584,7 +1589,7 @@ client.on(
                     await interaction.reply({
                         content:
                             "❌ There is no active giveaway.",
-                        ephemeral: true
+                        flags: 64
                     });
 
                     return;
@@ -1602,7 +1607,7 @@ client.on(
                     await interaction.reply({
                         content:
                             `🎟️ You are already entered with **${data.giveaway.entries[userId]} entries**.`,
-                        ephemeral: true
+                        flags: 64
                     });
 
                     return;
@@ -1628,7 +1633,7 @@ client.on(
                 await interaction.reply({
                     content:
                         "🎟️ You are now entered into the giveaway with **1 entry**!",
-                    ephemeral: true
+                    flags: 64
                 });
 
                 await updateLeaderboard();
@@ -1653,7 +1658,7 @@ client.on(
                     await interaction.followUp({
                         content:
                             "❌ Something went wrong.",
-                        ephemeral: true
+                        flags: 64
                     });
 
                 } catch {}
@@ -1665,7 +1670,7 @@ client.on(
                     await interaction.reply({
                         content:
                             "❌ Something went wrong.",
-                        ephemeral: true
+                        flags: 64
                     });
 
                 } catch {}
