@@ -1,5 +1,8 @@
 require("dotenv").config();
 
+const express = require("express");
+const fs = require("fs");
+
 const {
     Client,
     GatewayIntentBits,
@@ -10,19 +13,37 @@ const {
     EmbedBuilder,
     ActionRowBuilder,
     ButtonBuilder,
-    ButtonStyle,
-    ChannelType
+    ButtonStyle
 } = require("discord.js");
 
-const fs = require("fs");
+// ======================================================
+// RENDER WEB SERVER
+// ======================================================
+
+const app = express();
+const PORT = process.env.PORT || 10000;
+
+app.get("/", (req, res) => {
+    res.send("Discord bot is online!");
+});
+
+app.get("/health", (req, res) => {
+    res.json({
+        online: true,
+        bot: client?.user?.tag || null
+    });
+});
+
+app.listen(PORT, () => {
+    console.log(`Web server running on port ${PORT}`);
+});
 
 // ======================================================
 // CONFIG
 // ======================================================
 
 const DATA_FILE = "./data.json";
-
-const SELLER_TAX_RATE = 0.20;
+const TAX_RATE = 0.20;
 
 // ======================================================
 // DISCORD CLIENT
@@ -62,42 +83,39 @@ let data = {
 
 if (fs.existsSync(DATA_FILE)) {
     try {
-        data = JSON.parse(
+        const savedData = JSON.parse(
             fs.readFileSync(DATA_FILE, "utf8")
         );
+
+        data = {
+            giveaway: {
+                active: false,
+                prize: "",
+                endTime: null,
+                entries: {},
+                invitedMembers: {},
+                ...(savedData.giveaway || {})
+            },
+
+            leaderboardChannelId:
+                savedData.leaderboardChannelId || null,
+
+            leaderboardMessageId:
+                savedData.leaderboardMessageId || null,
+
+            sellers:
+                savedData.sellers || {},
+
+            nextSaleId:
+                savedData.nextSaleId || 1
+        };
+
     } catch (error) {
         console.error(
-            "❌ Could not read data.json:",
+            "Could not read data.json:",
             error.message
         );
     }
-}
-
-// Make sure older data.json files still work
-if (!data.giveaway) {
-    data.giveaway = {
-        active: false,
-        prize: "",
-        endTime: null,
-        entries: {},
-        invitedMembers: {}
-    };
-}
-
-if (!data.giveaway.entries) {
-    data.giveaway.entries = {};
-}
-
-if (!data.giveaway.invitedMembers) {
-    data.giveaway.invitedMembers = {};
-}
-
-if (!data.sellers) {
-    data.sellers = {};
-}
-
-if (!data.nextSaleId) {
-    data.nextSaleId = 1;
 }
 
 // ======================================================
@@ -105,10 +123,17 @@ if (!data.nextSaleId) {
 // ======================================================
 
 function saveData() {
-    fs.writeFileSync(
-        DATA_FILE,
-        JSON.stringify(data, null, 2)
-    );
+    try {
+        fs.writeFileSync(
+            DATA_FILE,
+            JSON.stringify(data, null, 2)
+        );
+    } catch (error) {
+        console.error(
+            "Could not save data:",
+            error.message
+        );
+    }
 }
 
 // ======================================================
@@ -146,7 +171,7 @@ async function cacheInvites(guild) {
 
     } catch (error) {
         console.error(
-            "❌ Could not cache invites:",
+            "Could not cache invites:",
             error.message
         );
     }
@@ -159,8 +184,7 @@ async function cacheInvites(guild) {
 async function findUsedInvite(guild) {
     try {
         const oldInvites =
-            invites.get(guild.id) ||
-            new Map();
+            invites.get(guild.id) || new Map();
 
         const newInviteCollection =
             await guild.invites.fetch();
@@ -197,7 +221,7 @@ async function findUsedInvite(guild) {
 
     } catch (error) {
         console.error(
-            "❌ Could not find used invite:",
+            "Could not find used invite:",
             error.message
         );
 
@@ -206,427 +230,12 @@ async function findUsedInvite(guild) {
 }
 
 // ======================================================
-// SELLER SYSTEM
-// ======================================================
-
-function getSeller(userId) {
-
-    if (!data.sellers[userId]) {
-
-        data.sellers[userId] = {
-
-            channelId: null,
-
-            messageId: null,
-
-            totalSales: 0,
-
-            salesCount: 0,
-
-            totalTax: 0,
-
-            lifetimeOrders: 0,
-
-            salesHistory: []
-        };
-    }
-
-    return data.sellers[userId];
-}
-
-// ======================================================
-// MONEY FORMAT
-// ======================================================
-
-function money(value) {
-
-    return `$${Number(value || 0).toFixed(2)}`;
-}
-
-// ======================================================
-// SELLER EMBED
-// ======================================================
-
-function createSellerEmbed(user) {
-
-    const seller =
-        getSeller(user.id);
-
-    const history =
-        seller.salesHistory || [];
-
-    const recentSales =
-        history
-            .slice(-10)
-            .reverse();
-
-    let historyText =
-        "No sales recorded yet.";
-
-    if (recentSales.length > 0) {
-
-        historyText =
-            recentSales
-                .map(sale => {
-
-                    const date =
-                        new Date(
-                            sale.timestamp
-                        );
-
-                    return (
-                        `🆔 **#${sale.id}** ` +
-                        `💰 ${money(sale.amount)} ` +
-                        `🧾 Tax: ${money(sale.tax)} ` +
-                        `📅 ${date.toLocaleDateString(
-                            "en-US",
-                            {
-                                month: "short",
-                                day: "numeric"
-                            }
-                        )}`
-                    );
-
-                })
-                .join("\n");
-    }
-
-    const sellerKeeps =
-        Number(seller.totalSales || 0) -
-        Number(seller.totalTax || 0);
-
-    return new EmbedBuilder()
-
-        .setTitle("📊 Seller Panel")
-
-        .setDescription(
-            `${user}`
-        )
-
-        .addFields(
-
-            {
-                name: "💰 Total Sales",
-
-                value:
-                    money(
-                        seller.totalSales
-                    ),
-
-                inline: true
-            },
-
-            {
-                name: "📦 Sales",
-
-                value:
-                    String(
-                        seller.salesCount || 0
-                    ),
-
-                inline: true
-            },
-
-            {
-                name: "💸 Tax Owed (20%)",
-
-                value:
-                    money(
-                        seller.totalTax
-                    ),
-
-                inline: true
-            },
-
-            {
-                name: "💵 Seller Earnings",
-
-                value:
-                    money(
-                        sellerKeeps
-                    ),
-
-                inline: true
-            },
-
-            {
-                name: "📜 Sales History",
-
-                value:
-                    historyText.substring(
-                        0,
-                        1024
-                    ),
-
-                inline: false
-            },
-
-            {
-                name: "📦 Lifetime Orders",
-
-                value:
-                    String(
-                        seller.lifetimeOrders || 0
-                    ),
-
-                inline: true
-            }
-        )
-
-        .setFooter({
-            text:
-                `Last Update: ${new Date().toLocaleString(
-                    "en-US"
-                )}`
-        });
-}
-
-// ======================================================
-// UPDATE SELLER PANEL
-// ======================================================
-
-async function updateSellerPanel(
-    userId,
-    guild
-) {
-
-    const seller =
-        getSeller(userId);
-
-    if (
-        !seller.channelId ||
-        !guild
-    ) {
-        return false;
-    }
-
-    let user;
-
-    try {
-
-        user =
-            await client.users.fetch(
-                userId
-            );
-
-    } catch {
-
-        return false;
-    }
-
-    let channel;
-
-    try {
-
-        channel =
-            await guild.channels.fetch(
-                seller.channelId
-            );
-
-    } catch {
-
-        channel = null;
-    }
-
-    if (
-        !channel ||
-        !channel.isTextBased()
-    ) {
-
-        return false;
-    }
-
-    const embed =
-        createSellerEmbed(user);
-
-    // Edit existing panel
-    if (seller.messageId) {
-
-        try {
-
-            const message =
-                await channel.messages.fetch(
-                    seller.messageId
-                );
-
-            await message.edit({
-                embeds: [embed]
-            });
-
-            return true;
-
-        } catch {
-
-            seller.messageId = null;
-        }
-    }
-
-    // Create panel if it doesn't exist
-    const message =
-        await channel.send({
-            embeds: [embed]
-        });
-
-    seller.messageId =
-        message.id;
-
-    saveData();
-
-    return true;
-}
-
-// ======================================================
-// CREATE SELLER CHANNEL
-// ======================================================
-
-async function createSellerChannel(
-    guild,
-    sellerUser,
-    creatorMember
-) {
-
-    const seller =
-        getSeller(
-            sellerUser.id
-        );
-
-    // Check for existing channel
-    if (seller.channelId) {
-
-        try {
-
-            const existing =
-                await guild.channels.fetch(
-                    seller.channelId
-                );
-
-            if (existing) {
-                return existing;
-            }
-
-        } catch {
-
-            seller.channelId = null;
-            seller.messageId = null;
-        }
-    }
-
-    const safeName =
-        sellerUser.username
-            .toLowerCase()
-            .replace(
-                /[^a-z0-9-]/g,
-                "-"
-            )
-            .replace(
-                /-+/g,
-                "-"
-            )
-            .replace(
-                /^-|-$/g,
-                ""
-            )
-            .substring(
-                0,
-                80
-            ) ||
-        `seller-${sellerUser.id}`;
-
-    const channel =
-        await guild.channels.create({
-
-            name:
-                `seller-${safeName}`,
-
-            type:
-                ChannelType.GuildText,
-
-            permissionOverwrites: [
-
-                // Everyone cannot see it
-                {
-                    id:
-                        guild.roles.everyone.id,
-
-                    deny: [
-                        PermissionFlagsBits.ViewChannel
-                    ]
-                },
-
-                // Seller can see it
-                {
-                    id:
-                        sellerUser.id,
-
-                    allow: [
-                        PermissionFlagsBits.ViewChannel,
-                        PermissionFlagsBits.SendMessages,
-                        PermissionFlagsBits.ReadMessageHistory
-                    ]
-                },
-
-                // Bot can see it
-                {
-                    id:
-                        client.user.id,
-
-                    allow: [
-                        PermissionFlagsBits.ViewChannel,
-                        PermissionFlagsBits.SendMessages,
-                        PermissionFlagsBits.ReadMessageHistory
-                    ]
-                }
-            ]
-        });
-
-    // Admin who created the channel can see it
-    if (
-        creatorMember &&
-        creatorMember.id !== sellerUser.id &&
-        creatorMember.id !== client.user.id
-    ) {
-
-        try {
-
-            await channel.permissionOverwrites.edit(
-                creatorMember.id,
-                {
-                    ViewChannel: true,
-                    SendMessages: true,
-                    ReadMessageHistory: true
-                }
-            );
-
-        } catch {}
-    }
-
-    seller.channelId =
-        channel.id;
-
-    seller.messageId =
-        null;
-
-    saveData();
-
-    await updateSellerPanel(
-        sellerUser.id,
-        guild
-    );
-
-    return channel;
-}
-
-// ======================================================
 // GIVEAWAY LEADERBOARD
 // ======================================================
 
 async function updateLeaderboard() {
-
     try {
-
-        if (
-            !data.leaderboardChannelId
-        ) {
+        if (!data.leaderboardChannelId) {
             return;
         }
 
@@ -644,40 +253,29 @@ async function updateLeaderboard() {
 
         const sortedEntries =
             Object.entries(entries)
-                .sort(
-                    (a, b) =>
-                        b[1] - a[1]
-                )
+                .sort((a, b) => b[1] - a[1])
                 .slice(0, 10);
 
         let description = "";
 
-        if (
-            sortedEntries.length === 0
-        ) {
-
+        if (sortedEntries.length === 0) {
             description =
                 "No giveaway entries yet.";
-
         } else {
-
             for (
                 let i = 0;
                 i < sortedEntries.length;
                 i++
             ) {
-
                 const [
                     userId,
                     entryCount
-                ] =
-                    sortedEntries[i];
+                ] = sortedEntries[i];
 
                 let username =
                     "Unknown User";
 
                 try {
-
                     const member =
                         await channel.guild.members.fetch(
                             userId
@@ -687,7 +285,6 @@ async function updateLeaderboard() {
                         member.user.username;
 
                 } catch {
-
                     username =
                         `<@${userId}>`;
                 }
@@ -699,23 +296,16 @@ async function updateLeaderboard() {
 
         const embed =
             new EmbedBuilder()
-
                 .setTitle(
                     "🏆 Giveaway Leaderboard"
                 )
-
                 .setDescription(
                     description
                 )
-
                 .setTimestamp();
 
-        if (
-            data.leaderboardMessageId
-        ) {
-
+        if (data.leaderboardMessageId) {
             try {
-
                 const message =
                     await channel.messages.fetch(
                         data.leaderboardMessageId
@@ -728,7 +318,6 @@ async function updateLeaderboard() {
                 return;
 
             } catch {
-
                 data.leaderboardMessageId =
                     null;
             }
@@ -745,9 +334,8 @@ async function updateLeaderboard() {
         saveData();
 
     } catch (error) {
-
         console.error(
-            "❌ Could not update leaderboard:",
+            "Could not update leaderboard:",
             error.message
         );
     }
@@ -758,10 +346,7 @@ async function updateLeaderboard() {
 // ======================================================
 
 async function finishGiveaway() {
-
-    if (
-        !data.giveaway.active
-    ) {
+    if (!data.giveaway.active) {
         return;
     }
 
@@ -770,35 +355,23 @@ async function finishGiveaway() {
 
     const entryList = [];
 
-    for (
-        const [
-            userId,
-            count
-        ]
-        of Object.entries(entries)
-    ) {
+    for (const [
+        userId,
+        count
+    ] of Object.entries(entries)) {
 
         for (
             let i = 0;
             i < count;
             i++
         ) {
-
-            entryList.push(
-                userId
-            );
+            entryList.push(userId);
         }
     }
 
-    if (
-        entryList.length === 0
-    ) {
-
-        data.giveaway.active =
-            false;
-
-        data.giveaway.endTime =
-            null;
+    if (entryList.length === 0) {
+        data.giveaway.active = false;
+        data.giveaway.endTime = null;
 
         saveData();
 
@@ -816,11 +389,8 @@ async function finishGiveaway() {
     const prize =
         data.giveaway.prize;
 
-    data.giveaway.active =
-        false;
-
-    data.giveaway.endTime =
-        null;
+    data.giveaway.active = false;
+    data.giveaway.endTime = null;
 
     saveData();
 
@@ -843,9 +413,8 @@ async function finishGiveaway() {
         );
 
     if (!channel) {
-
         console.error(
-            "❌ Could not find a channel to announce giveaway winner."
+            "Could not find a channel to announce giveaway winner."
         );
 
         return;
@@ -853,16 +422,13 @@ async function finishGiveaway() {
 
     const embed =
         new EmbedBuilder()
-
             .setTitle(
                 "🎉 Giveaway Ended!"
             )
-
             .setDescription(
                 `**Prize:** ${prize}\n\n` +
                 `🏆 **Winner:** <@${winnerId}>`
             )
-
             .setTimestamp();
 
     await channel.send({
@@ -877,7 +443,6 @@ async function finishGiveaway() {
 // ======================================================
 
 function startGiveawayTimer() {
-
     if (
         !data.giveaway.active ||
         !data.giveaway.endTime
@@ -890,18 +455,13 @@ function startGiveawayTimer() {
         Date.now();
 
     if (remaining <= 0) {
-
         finishGiveaway();
-
         return;
     }
 
-    setTimeout(
-        () => {
-            finishGiveaway();
-        },
-        remaining
-    );
+    setTimeout(() => {
+        finishGiveaway();
+    }, remaining);
 }
 
 // ======================================================
@@ -911,9 +471,7 @@ function startGiveawayTimer() {
 client.on(
     "guildMemberAdd",
     async member => {
-
         try {
-
             const usedInvite =
                 await findUsedInvite(
                     member.guild
@@ -946,10 +504,7 @@ client.on(
                     inviterId
                 ]
             ) {
-
-                data.giveaway.entries[
-                    inviterId
-                ] = 1;
+                return;
             }
 
             data.giveaway.entries[
@@ -961,7 +516,6 @@ client.on(
                     inviterId
                 ]
             ) {
-
                 data.giveaway.invitedMembers[
                     inviterId
                 ] = [];
@@ -969,9 +523,7 @@ client.on(
 
             data.giveaway.invitedMembers[
                 inviterId
-            ].push(
-                member.id
-            );
+            ].push(member.id);
 
             saveData();
 
@@ -982,9 +534,8 @@ client.on(
             );
 
         } catch (error) {
-
             console.error(
-                "❌ Error handling member join:",
+                "Error handling member join:",
                 error.message
             );
         }
@@ -998,9 +549,7 @@ client.on(
 client.on(
     "guildMemberRemove",
     async member => {
-
         try {
-
             if (
                 !data.giveaway.active
             ) {
@@ -1011,24 +560,19 @@ client.on(
                 data.giveaway
                     .invitedMembers || {};
 
-            for (
-                const [
-                    inviterId,
-                    memberIds
-                ]
-                of Object.entries(
-                    invitedMembers
-                )
-            ) {
+            for (const [
+                inviterId,
+                memberIds
+            ] of Object.entries(
+                invitedMembers
+            )) {
 
                 const index =
                     memberIds.indexOf(
                         member.id
                     );
 
-                if (
-                    index !== -1
-                ) {
+                if (index !== -1) {
 
                     memberIds.splice(
                         index,
@@ -1040,7 +584,6 @@ client.on(
                             inviterId
                         ] > 1
                     ) {
-
                         data.giveaway.entries[
                             inviterId
                         ]--;
@@ -1059,9 +602,8 @@ client.on(
             }
 
         } catch (error) {
-
             console.error(
-                "❌ Error handling member leave:",
+                "Error handling member leave:",
                 error.message
             );
         }
@@ -1069,13 +611,275 @@ client.on(
 );
 
 // ======================================================
-// BOT READY
+// SELLER PANEL
+// ======================================================
+
+function createSellerEmbed(
+    userId,
+    seller
+) {
+    const totalSales =
+        Number(seller.totalSales || 0);
+
+    const totalTax =
+        Number(seller.totalTax || 0);
+
+    const amountAfterTax =
+        totalSales - totalTax;
+
+    return new EmbedBuilder()
+        .setTitle("💰 Seller Sales")
+        .setDescription(
+            `<@${userId}>\n\n` +
+            "Your sales information is shown below."
+        )
+        .addFields(
+            {
+                name: "💵 Total Sales",
+                value:
+                    `$${totalSales.toFixed(2)}`,
+                inline: true
+            },
+            {
+                name: "🧾 Tax Owed",
+                value:
+                    `$${totalTax.toFixed(2)}`,
+                inline: true
+            },
+            {
+                name: "💰 After Tax",
+                value:
+                    `$${amountAfterTax.toFixed(2)}`,
+                inline: true
+            },
+            {
+                name: "📦 Sales",
+                value:
+                    `${seller.salesCount || 0}`,
+                inline: true
+            },
+            {
+                name: "📋 Lifetime Orders",
+                value:
+                    `${seller.lifetimeOrders || 0}`,
+                inline: true
+            }
+        )
+        .setFooter({
+            text: "Tax rate: 20%"
+        })
+        .setTimestamp();
+}
+
+// ======================================================
+// UPDATE SELLER PANEL
+// ======================================================
+
+async function updateSellerPanel(
+    guild,
+    userId
+) {
+    try {
+        const seller =
+            data.sellers[userId];
+
+        if (!seller) {
+            return;
+        }
+
+        let channel = null;
+
+        if (seller.channelId) {
+            try {
+                channel =
+                    await guild.channels.fetch(
+                        seller.channelId
+                    );
+            } catch {
+                channel = null;
+            }
+        }
+
+        if (!channel) {
+            console.error(
+                `Seller channel not found for ${userId}`
+            );
+
+            return;
+        }
+
+        const embed =
+            createSellerEmbed(
+                userId,
+                seller
+            );
+
+        if (seller.messageId) {
+            try {
+                const message =
+                    await channel.messages.fetch(
+                        seller.messageId
+                    );
+
+                await message.edit({
+                    embeds: [embed]
+                });
+
+                return;
+
+            } catch {
+                seller.messageId = null;
+            }
+        }
+
+        const message =
+            await channel.send({
+                embeds: [embed]
+            });
+
+        seller.messageId =
+            message.id;
+
+        saveData();
+
+    } catch (error) {
+        console.error(
+            "Could not update seller panel:",
+            error.message
+        );
+    }
+}
+
+// ======================================================
+// RESTORE SELLER PANELS
+// ======================================================
+
+async function restoreSellerPanels() {
+    for (
+        const guild of
+        client.guilds.cache.values()
+    ) {
+
+        for (
+            const userId of
+            Object.keys(data.sellers)
+        ) {
+
+            await updateSellerPanel(
+                guild,
+                userId
+            );
+        }
+    }
+}
+
+// ======================================================
+// CREATE SELLER
+// ======================================================
+
+async function createSeller(
+    guild,
+    user
+) {
+    if (
+        data.sellers[user.id]
+    ) {
+        return {
+            success: false,
+            message:
+                "❌ This user is already a seller."
+        };
+    }
+
+    const safeUsername =
+        user.username
+            .toLowerCase()
+            .replace(/[^a-z0-9-]/g, "")
+            .substring(0, 80);
+
+    const channel =
+        await guild.channels.create({
+            name:
+                `sales-${safeUsername}`,
+
+            type: 0,
+
+            permissionOverwrites: [
+                {
+                    id:
+                        guild.roles.everyone.id,
+
+                    deny: [
+                        PermissionFlagsBits.ViewChannel
+                    ]
+                },
+                {
+                    id:
+                        user.id,
+
+                    allow: [
+                        PermissionFlagsBits.ViewChannel,
+                        PermissionFlagsBits.SendMessages,
+                        PermissionFlagsBits.ReadMessageHistory
+                    ]
+                },
+                {
+                    id:
+                        client.user.id,
+
+                    allow: [
+                        PermissionFlagsBits.ViewChannel,
+                        PermissionFlagsBits.SendMessages,
+                        PermissionFlagsBits.EmbedLinks,
+                        PermissionFlagsBits.ReadMessageHistory
+                    ]
+                }
+            ]
+        });
+
+    data.sellers[user.id] = {
+        channelId:
+            channel.id,
+
+        messageId:
+            null,
+
+        totalSales:
+            0,
+
+        salesCount:
+            0,
+
+        totalTax:
+            0,
+
+        lifetimeOrders:
+            0,
+
+        salesHistory:
+            []
+    };
+
+    saveData();
+
+    await updateSellerPanel(
+        guild,
+        user.id
+    );
+
+    return {
+        success: true,
+        channel
+    };
+}
+
+// ======================================================
+// READY
 // ======================================================
 
 client.once(
-    "ready",
+    "clientReady",
     async () => {
-
         console.log(
             `Logged in as ${client.user.tag}`
         );
@@ -1084,10 +888,7 @@ client.once(
             const guild of
             client.guilds.cache.values()
         ) {
-
-            await cacheInvites(
-                guild
-            );
+            await cacheInvites(guild);
         }
 
         console.log(
@@ -1098,29 +899,11 @@ client.once(
 
         await updateLeaderboard();
 
-        // Restore seller panels
-        for (
-            const userId of
-            Object.keys(
-                data.sellers || {}
-            )
-        ) {
+        await restoreSellerPanels();
 
-            try {
-
-                await updateSellerPanel(
-                    userId,
-                    client.guilds.cache.first()
-                );
-
-            } catch (error) {
-
-                console.error(
-                    `❌ Could not restore seller panel for ${userId}:`,
-                    error.message
-                );
-            }
-        }
+        console.log(
+            "Seller panels restored."
+        );
     }
 );
 
@@ -1130,19 +913,11 @@ client.once(
 
 const commands = [
 
-    // ==================================================
-    // ENTRIES
-    // ==================================================
-
     new SlashCommandBuilder()
         .setName("entries")
         .setDescription(
             "View your giveaway entries"
         ),
-
-    // ==================================================
-    // LEADERBOARD
-    // ==================================================
 
     new SlashCommandBuilder()
         .setName("leaderboard")
@@ -1150,16 +925,11 @@ const commands = [
             "View the giveaway leaderboard"
         ),
 
-    // ==================================================
-    // START GIVEAWAY
-    // ==================================================
-
     new SlashCommandBuilder()
         .setName("startgiveaway")
         .setDescription(
             "Start a giveaway"
         )
-
         .addStringOption(option =>
             option
                 .setName("prize")
@@ -1168,7 +938,6 @@ const commands = [
                 )
                 .setRequired(true)
         )
-
         .addIntegerOption(option =>
             option
                 .setName("hours")
@@ -1179,90 +948,64 @@ const commands = [
                 .setMinValue(1)
                 .setMaxValue(720)
         )
-
         .setDefaultMemberPermissions(
             PermissionFlagsBits.ManageGuild
         ),
-
-    // ==================================================
-    // END GIVEAWAY
-    // ==================================================
 
     new SlashCommandBuilder()
         .setName("endgiveaway")
         .setDescription(
             "End the current giveaway"
         )
-
         .setDefaultMemberPermissions(
             PermissionFlagsBits.ManageGuild
         ),
-
-    // ==================================================
-    // SET LEADERBOARD
-    // ==================================================
 
     new SlashCommandBuilder()
         .setName("setleaderboard")
         .setDescription(
             "Set this channel as the giveaway leaderboard channel"
         )
-
         .setDefaultMemberPermissions(
             PermissionFlagsBits.ManageGuild
         ),
 
-    // ==================================================
-    // CREATE SELLER
-    // ==================================================
-
     new SlashCommandBuilder()
         .setName("createseller")
         .setDescription(
-            "Create a private seller channel and seller panel"
+            "Create a seller sales channel"
         )
-
         .addUserOption(option =>
             option
                 .setName("seller")
                 .setDescription(
-                    "The seller to create a panel for"
+                    "The person who should be added as a seller"
                 )
                 .setRequired(true)
         )
-
         .setDefaultMemberPermissions(
             PermissionFlagsBits.ManageChannels
         ),
 
-    // ==================================================
-    // EARN
-    // ==================================================
-
     new SlashCommandBuilder()
         .setName("earn")
         .setDescription(
-            "Record money earned from a sale"
+            "Record a sale"
         )
-
         .addNumberOption(option =>
             option
                 .setName("amount")
                 .setDescription(
-                    "The amount earned from the sale"
+                    "The amount of the sale"
                 )
                 .setRequired(true)
                 .setMinValue(0.01)
         ),
 
-    // ==================================================
-    // SELLER
-    // ==================================================
-
     new SlashCommandBuilder()
         .setName("seller")
         .setDescription(
-            "View your seller totals"
+            "View your seller sales information"
         )
 
 ].map(command =>
@@ -1274,9 +1017,7 @@ const commands = [
 // ======================================================
 
 async function registerCommands() {
-
     try {
-
         console.log(
             "Registering slash commands..."
         );
@@ -1289,12 +1030,10 @@ async function registerCommands() {
             );
 
         await rest.put(
-
             Routes.applicationGuildCommands(
                 process.env.CLIENT_ID,
                 process.env.GUILD_ID
             ),
-
             {
                 body: commands
             }
@@ -1305,9 +1044,8 @@ async function registerCommands() {
         );
 
     } catch (error) {
-
         console.error(
-            "❌ Could not register slash commands:",
+            "Could not register slash commands:",
             error
         );
     }
@@ -1324,261 +1062,11 @@ client.on(
         try {
 
             // ==========================================
-            // CREATE SELLER
-            // ==========================================
-
-            if (
-                interaction.commandName ===
-                "createseller"
-            ) {
-
-                const sellerUser =
-                    interaction.options.getUser(
-                        "seller"
-                    );
-
-                try {
-
-                    const channel =
-                        await createSellerChannel(
-                            interaction.guild,
-                            sellerUser,
-                            interaction.member
-                        );
-
-                    await interaction.reply({
-
-                        content:
-                            `✅ Seller channel created for ${sellerUser}.\n` +
-                            `📁 ${channel}`,
-
-                        ephemeral:
-                            true
-                    });
-
-                } catch (error) {
-
-                    console.error(
-                        "❌ Could not create seller channel:",
-                        error
-                    );
-
-                    await interaction.reply({
-
-                        content:
-                            "❌ I couldn't create the seller channel. Make sure the bot has **Manage Channels** permission.",
-
-                        ephemeral:
-                            true
-                    });
-                }
-
-                return;
-            }
-
-            // ==========================================
-            // EARN
-            // ==========================================
-
-            if (
-                interaction.commandName ===
-                "earn"
-            ) {
-
-                const userId =
-                    interaction.user.id;
-
-                const amount =
-                    interaction.options.getNumber(
-                        "amount"
-                    );
-
-                const seller =
-                    getSeller(
-                        userId
-                    );
-
-                // Seller must have a channel
-                if (
-                    !seller.channelId
-                ) {
-
-                    await interaction.reply({
-
-                        content:
-                            "❌ You do not have a seller channel yet. Ask an admin to run `/createseller seller:@you` first.",
-
-                        ephemeral:
-                            true
-                    });
-
-                    return;
-                }
-
-                // Calculate 20%
-                const tax =
-                    Number(
-                        (
-                            amount *
-                            SELLER_TAX_RATE
-                        ).toFixed(2)
-                    );
-
-                // Add sale to total
-                seller.totalSales =
-                    Number(
-                        (
-                            seller.totalSales +
-                            amount
-                        ).toFixed(2)
-                    );
-
-                // Add tax
-                seller.totalTax =
-                    Number(
-                        (
-                            seller.totalTax +
-                            tax
-                        ).toFixed(2)
-                    );
-
-                // Add sale count
-                seller.salesCount =
-                    Number(
-                        seller.salesCount ||
-                        0
-                    ) + 1;
-
-                // Add order
-                seller.lifetimeOrders =
-                    Number(
-                        seller.lifetimeOrders ||
-                        0
-                    ) + 1;
-
-                // Create sale history record
-                const sale = {
-
-                    id:
-                        data.nextSaleId++,
-
-                    amount:
-                        Number(
-                            amount.toFixed(2)
-                        ),
-
-                    tax:
-                        tax,
-
-                    timestamp:
-                        Date.now()
-                };
-
-                if (
-                    !seller.salesHistory
-                ) {
-
-                    seller.salesHistory =
-                        [];
-                }
-
-                seller.salesHistory.push(
-                    sale
-                );
-
-                // Keep the most recent 100 sales
-                if (
-                    seller.salesHistory.length >
-                    100
-                ) {
-
-                    seller.salesHistory =
-                        seller.salesHistory.slice(
-                            -100
-                        );
-                }
-
-                saveData();
-
-                // Update seller's channel
-                await updateSellerPanel(
-                    userId,
-                    interaction.guild
-                );
-
-                // Private response
-                await interaction.reply({
-
-                    content:
-                        `💰 **Sale Recorded!**\n\n` +
-                        `💵 Earned: **${money(amount)}**\n` +
-                        `🧾 20% Tax Owed: **${money(tax)}**\n` +
-                        `💵 You Keep: **${money(amount - tax)}**`,
-
-                    ephemeral:
-                        true
-                });
-
-                return;
-            }
-
-            // ==========================================
-            // SELLER
-            // ==========================================
-
-            if (
-                interaction.commandName ===
-                "seller"
-            ) {
-
-                const seller =
-                    getSeller(
-                        interaction.user.id
-                    );
-
-                const sellerKeeps =
-                    Number(
-                        seller.totalSales ||
-                        0
-                    ) -
-                    Number(
-                        seller.totalTax ||
-                        0
-                    );
-
-                const embed =
-                    createSellerEmbed(
-                        interaction.user
-                    );
-
-                embed.addFields({
-
-                    name:
-                        "📌 Your Totals",
-
-                    value:
-                        `💰 Sales: ${money(seller.totalSales)}\n` +
-                        `🧾 Tax Owed: ${money(seller.totalTax)}\n` +
-                        `💵 Seller Earnings: ${money(sellerKeeps)}`
-                });
-
-                await interaction.reply({
-
-                    embeds:
-                        [embed],
-
-                    ephemeral:
-                        true
-                });
-
-                return;
-            }
-
-            // ==========================================
             // ENTRIES
             // ==========================================
 
             if (
+                interaction.isChatInputCommand() &&
                 interaction.commandName ===
                 "entries"
             ) {
@@ -1592,12 +1080,9 @@ client.on(
                     ] || 0;
 
                 await interaction.reply({
-
                     content:
                         `🎟️ You currently have **${entries} giveaway entries**.`,
-
-                    ephemeral:
-                        true
+                    ephemeral: true
                 });
 
                 return;
@@ -1608,6 +1093,7 @@ client.on(
             // ==========================================
 
             if (
+                interaction.isChatInputCommand() &&
                 interaction.commandName ===
                 "leaderboard"
             ) {
@@ -1617,20 +1103,14 @@ client.on(
                     {};
 
                 const sortedEntries =
-                    Object.entries(
-                        entries
-                    )
+                    Object.entries(entries)
                         .sort(
                             (a, b) =>
                                 b[1] - a[1]
                         )
-                        .slice(
-                            0,
-                            10
-                        );
+                        .slice(0, 10);
 
-                let description =
-                    "";
+                let description = "";
 
                 if (
                     sortedEntries.length ===
@@ -1662,22 +1142,16 @@ client.on(
 
                 const embed =
                     new EmbedBuilder()
-
                         .setTitle(
                             "🏆 Giveaway Leaderboard"
                         )
-
                         .setDescription(
                             description
                         );
 
                 await interaction.reply({
-
-                    embeds:
-                        [embed],
-
-                    ephemeral:
-                        true
+                    embeds: [embed],
+                    ephemeral: true
                 });
 
                 return;
@@ -1688,6 +1162,7 @@ client.on(
             // ==========================================
 
             if (
+                interaction.isChatInputCommand() &&
                 interaction.commandName ===
                 "startgiveaway"
             ) {
@@ -1707,80 +1182,53 @@ client.on(
                 ) {
 
                     await interaction.reply({
-
                         content:
                             "❌ A giveaway is already active.",
-
-                        ephemeral:
-                            true
+                        ephemeral: true
                     });
 
                     return;
                 }
 
                 data.giveaway = {
-
-                    active:
-                        true,
-
-                    prize:
-                        prize,
-
+                    active: true,
+                    prize,
                     endTime:
                         Date.now() +
                         hours *
-                        60 *
-                        60 *
-                        1000,
-
-                    entries:
-                        {},
-
-                    invitedMembers:
-                        {}
+                            60 *
+                            60 *
+                            1000,
+                    entries: {},
+                    invitedMembers: {}
                 };
 
                 saveData();
 
                 const embed =
                     new EmbedBuilder()
-
                         .setTitle(
                             "🎉 GIVEAWAY!"
                         )
-
                         .setDescription(
-
                             `🎁 **Prize:** ${prize}\n\n` +
-
                             `⏰ **Duration:** ${hours} hour(s)\n\n` +
-
                             `🎟️ Everyone starts with 1 entry.\n` +
-
                             `👥 Each successful invite gives you +1 entry.\n` +
-
                             `🔄 Entries are removed if the invited member leaves.\n\n` +
-
                             `🏆 The winner is selected randomly, weighted by entries.`
                         )
-
                         .setTimestamp();
 
                 const button =
                     new ButtonBuilder()
-
                         .setCustomId(
                             "enter_giveaway"
                         )
-
                         .setLabel(
                             "Enter Giveaway"
                         )
-
-                        .setEmoji(
-                            "🎟️"
-                        )
-
+                        .setEmoji("🎟️")
                         .setStyle(
                             ButtonStyle.Success
                         );
@@ -1792,21 +1240,14 @@ client.on(
                         );
 
                 await interaction.reply({
-
                     content:
                         "🎉 Giveaway started!",
-
-                    ephemeral:
-                        true
+                    ephemeral: true
                 });
 
                 await interaction.channel.send({
-
-                    embeds:
-                        [embed],
-
-                    components:
-                        [row]
+                    embeds: [embed],
+                    components: [row]
                 });
 
                 await updateLeaderboard();
@@ -1821,6 +1262,7 @@ client.on(
             // ==========================================
 
             if (
+                interaction.isChatInputCommand() &&
                 interaction.commandName ===
                 "endgiveaway"
             ) {
@@ -1830,24 +1272,18 @@ client.on(
                 ) {
 
                     await interaction.reply({
-
                         content:
                             "❌ There is no active giveaway.",
-
-                        ephemeral:
-                            true
+                        ephemeral: true
                     });
 
                     return;
                 }
 
                 await interaction.reply({
-
                     content:
                         "⏹️ Ending giveaway...",
-
-                    ephemeral:
-                        true
+                    ephemeral: true
                 });
 
                 await finishGiveaway();
@@ -1860,6 +1296,7 @@ client.on(
             // ==========================================
 
             if (
+                interaction.isChatInputCommand() &&
                 interaction.commandName ===
                 "setleaderboard"
             ) {
@@ -1875,12 +1312,256 @@ client.on(
                 await updateLeaderboard();
 
                 await interaction.reply({
-
                     content:
                         "✅ This channel is now the giveaway leaderboard channel.",
+                    ephemeral: true
+                });
 
-                    ephemeral:
-                        true
+                return;
+            }
+
+            // ==========================================
+            // CREATE SELLER
+            // ==========================================
+
+            if (
+                interaction.isChatInputCommand() &&
+                interaction.commandName ===
+                "createseller"
+            ) {
+
+                const sellerUser =
+                    interaction.options.getUser(
+                        "seller"
+                    );
+
+                if (
+                    data.sellers[
+                        sellerUser.id
+                    ]
+                ) {
+
+                    await interaction.reply({
+                        content:
+                            "❌ This user is already registered as a seller.",
+                        ephemeral: true
+                    });
+
+                    return;
+                }
+
+                const result =
+                    await createSeller(
+                        interaction.guild,
+                        sellerUser
+                    );
+
+                if (!result.success) {
+
+                    await interaction.reply({
+                        content:
+                            result.message,
+                        ephemeral: true
+                    });
+
+                    return;
+                }
+
+                await interaction.reply({
+                    content:
+                        `✅ Seller created for ${sellerUser}.\n\n📁 Seller channel: ${result.channel}`,
+                    ephemeral: true
+                });
+
+                return;
+            }
+
+            // ==========================================
+            // EARN
+            // ==========================================
+
+            if (
+                interaction.isChatInputCommand() &&
+                interaction.commandName ===
+                "earn"
+            ) {
+
+                const userId =
+                    interaction.user.id;
+
+                if (
+                    !data.sellers[userId]
+                ) {
+
+                    await interaction.reply({
+                        content:
+                            "❌ You are not registered as a seller.",
+                        ephemeral: true
+                    });
+
+                    return;
+                }
+
+                const amount =
+                    interaction.options.getNumber(
+                        "amount"
+                    );
+
+                const tax =
+                    Number(
+                        (
+                            amount *
+                            TAX_RATE
+                        ).toFixed(2)
+                    );
+
+                const seller =
+                    data.sellers[userId];
+
+                seller.totalSales =
+                    Number(
+                        seller.totalSales || 0
+                    ) + amount;
+
+                seller.totalTax =
+                    Number(
+                        seller.totalTax || 0
+                    ) + tax;
+
+                seller.salesCount =
+                    Number(
+                        seller.salesCount || 0
+                    ) + 1;
+
+                seller.lifetimeOrders =
+                    Number(
+                        seller.lifetimeOrders || 0
+                    ) + 1;
+
+                const sale = {
+                    id:
+                        data.nextSaleId++,
+
+                    amount:
+                        Number(
+                            amount.toFixed(2)
+                        ),
+
+                    tax,
+
+                    timestamp:
+                        new Date().toISOString()
+                };
+
+                if (
+                    !Array.isArray(
+                        seller.salesHistory
+                    )
+                ) {
+                    seller.salesHistory = [];
+                }
+
+                seller.salesHistory.push(
+                    sale
+                );
+
+                if (
+                    seller.salesHistory.length >
+                    100
+                ) {
+                    seller.salesHistory =
+                        seller.salesHistory.slice(
+                            -100
+                        );
+                }
+
+                saveData();
+
+                await updateSellerPanel(
+                    interaction.guild,
+                    userId
+                );
+
+                const afterTax =
+                    amount - tax;
+
+                const embed =
+                    new EmbedBuilder()
+                        .setTitle(
+                            "💰 Sale Recorded"
+                        )
+                        .addFields(
+                            {
+                                name:
+                                    "Sale",
+                                value:
+                                    `$${amount.toFixed(2)}`,
+                                inline:
+                                    true
+                            },
+                            {
+                                name:
+                                    "Tax (20%)",
+                                value:
+                                    `$${tax.toFixed(2)}`,
+                                inline:
+                                    true
+                            },
+                            {
+                                name:
+                                    "After Tax",
+                                value:
+                                    `$${afterTax.toFixed(2)}`,
+                                inline:
+                                    true
+                            }
+                        )
+                        .setTimestamp();
+
+                await interaction.reply({
+                    embeds: [embed],
+                    ephemeral: true
+                });
+
+                return;
+            }
+
+            // ==========================================
+            // SELLER
+            // ==========================================
+
+            if (
+                interaction.isChatInputCommand() &&
+                interaction.commandName ===
+                "seller"
+            ) {
+
+                const userId =
+                    interaction.user.id;
+
+                const seller =
+                    data.sellers[userId];
+
+                if (!seller) {
+
+                    await interaction.reply({
+                        content:
+                            "❌ You are not registered as a seller.",
+                        ephemeral: true
+                    });
+
+                    return;
+                }
+
+                const embed =
+                    createSellerEmbed(
+                        userId,
+                        seller
+                    );
+
+                await interaction.reply({
+                    embeds: [embed],
+                    ephemeral: true
                 });
 
                 return;
@@ -1901,12 +1582,9 @@ client.on(
                 ) {
 
                     await interaction.reply({
-
                         content:
                             "❌ There is no active giveaway.",
-
-                        ephemeral:
-                            true
+                        ephemeral: true
                     });
 
                     return;
@@ -1922,12 +1600,9 @@ client.on(
                 ) {
 
                     await interaction.reply({
-
                         content:
                             `🎟️ You are already entered with **${data.giveaway.entries[userId]} entries**.`,
-
-                        ephemeral:
-                            true
+                        ephemeral: true
                     });
 
                     return;
@@ -1951,12 +1626,9 @@ client.on(
                 saveData();
 
                 await interaction.reply({
-
                     content:
                         "🎟️ You are now entered into the giveaway with **1 entry**!",
-
-                    ephemeral:
-                        true
+                    ephemeral: true
                 });
 
                 await updateLeaderboard();
@@ -1967,7 +1639,7 @@ client.on(
         } catch (error) {
 
             console.error(
-                "❌ Interaction error:",
+                "Interaction error:",
                 error
             );
 
@@ -1979,12 +1651,9 @@ client.on(
                 try {
 
                     await interaction.followUp({
-
                         content:
                             "❌ Something went wrong.",
-
-                        ephemeral:
-                            true
+                        ephemeral: true
                     });
 
                 } catch {}
@@ -1994,12 +1663,9 @@ client.on(
                 try {
 
                     await interaction.reply({
-
                         content:
                             "❌ Something went wrong.",
-
-                        ephemeral:
-                            true
+                        ephemeral: true
                     });
 
                 } catch {}
