@@ -5,11 +5,11 @@
   },
   "invitedBy": {},
   "giveaway": {
-    "active": true,
+    "active": false,
     "prize": "DEDI OF TREE PLATS",
     "channelId": "1531705798789566555",
     "messageId": "1542943973595947101",
-    "endTime": 1788541701183
+    "endTime": null
   },
   "participants": {
     "1370129520446931006": true,
